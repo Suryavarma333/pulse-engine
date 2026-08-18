@@ -86,6 +86,8 @@ class ControlStateMachine:
             return ControlState.NORMAL
         if event is ControlEvent.QUALIFYING_EVIDENCE:
             return ControlState.WATCH
+        if event is ControlEvent.SCHEDULED_HORIZON:
+            return ControlState.PREWARM
         raise InvalidStateTransition(f"{event.value} is invalid from watch")
 
     def _from_prewarm(self, event: ControlEvent) -> ControlState:
@@ -103,6 +105,9 @@ class ControlStateMachine:
         raise InvalidStateTransition(f"{event.value} is invalid from protect")
 
     def _from_recovery(self, event: ControlEvent) -> ControlState:
+        if event is ControlEvent.SCHEDULED_HORIZON:
+            self._cooldown_resume_state = ControlState.RECOVERY
+            return ControlState.PREWARM
         if event is ControlEvent.RECOVERY_STEP:
             self._cooldown_resume_state = ControlState.RECOVERY
             return ControlState.COOLDOWN
@@ -113,6 +118,8 @@ class ControlStateMachine:
         raise InvalidStateTransition(f"{event.value} is invalid from recovery")
 
     def _from_cooldown(self, event: ControlEvent) -> ControlState:
+        if event is ControlEvent.SCHEDULED_HORIZON:
+            return ControlState.PREWARM
         if event is ControlEvent.COOLDOWN_EXPIRED:
             return self._cooldown_resume_state
         if event is ControlEvent.SUSTAINED_LOW:

@@ -58,6 +58,17 @@ class MemoryActions:
             target_resource=command.target_resource,
             cooldown_until=None,
             signal_evidence=command.signal_evidence,
+            response_command=command.model_dump(mode="json"),
+            requested_shedding_level=(
+                None
+                if command.requested_shedding_level is None
+                else int(command.requested_shedding_level)
+            ),
+            shedding_status=(
+                "not_requested"
+                if command.requested_shedding_level is None
+                else "pending"
+            ),
         )
         self.actions[command.idempotency_key] = action
         return SimpleNamespace(action=action, claimed=True)
@@ -74,6 +85,12 @@ class MemoryActions:
     async def record_control_error(self, **values):
         action = self.actions[values["idempotency_key"]]
         action.error_message = values["error_message"]
+        return action
+
+    async def mark_shedding_outcome(self, **values):
+        action = self.actions[values["idempotency_key"]]
+        action.shedding_status = "succeeded" if values["succeeded"] else "pending"
+        action.shedding_error = values.get("error_message")
         return action
 
 

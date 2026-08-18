@@ -7,13 +7,15 @@ from uuid import uuid4
 
 import pytest
 
+from agent.app.metrics.collector import CollectedSignals
 from agent.app.services.feedback import (
     EvaluationBundle,
     FeedbackEvaluator,
     FeedbackService,
     FeedbackWorker,
 )
-from common.enums import DemoRunStatus
+from common.contracts import CapacityState
+from common.enums import DemoRunStatus, ProviderStatus
 from db.models import DemoRun, ScalingAction, SurgePrediction, TrafficSnapshot
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
@@ -132,6 +134,67 @@ def test_formula_fixture_reconciles_exact_traceable_metrics() -> None:
     assert outcome.summary["references"]["action_ids"] == [str(action.id)]
     assert outcome.summary["formula_version"] == "v1"
     assert "paired_reactive_baseline_unavailable" in outcome.metrics.warnings
+
+
+def test_collector_production_snapshots_close_run_with_provisioning_metrics() -> None:
+    def collected(index: int, rate: float, desired: int) -> TrafficSnapshot:
+        at = NOW + timedelta(seconds=index * 30)
+        signals = CollectedSignals(
+            observed_at=at,
+            origin_observed_at=at,
+            origin_request_rate_rps=rate,
+            request_count=int(rate * 30),
+            concurrent_requests=2,
+            error_rate=0,
+            p50_latency_ms=10,
+            p95_latency_ms=20,
+            p99_latency_ms=30,
+            checkout_p99_latency_ms=20,
+            checkout_success_rate=1,
+            load_shedding_level=0,
+            optional_values={},
+            provider_health={"demo_app": {"status": "healthy"}},
+            capacity_state=CapacityState(
+                desired=desired,
+                in_service=desired,
+                pending=0,
+                observed_at=at,
+                provider_status=ProviderStatus.SIMULATED,
+            ),
+            capacity_per_instance_rps=20,
+        )
+        result = signals.to_snapshot(
+            window_seconds=60,
+            baseline_request_rate_rps=10,
+            request_rate_change_rps=0,
+            request_acceleration_rps2=0,
+            queue_growth_per_second=None,
+            reactive_comparator_crossed=False,
+            evidence={"environment": "local"},
+        )
+        result.id = index + 1
+        return result
+
+    item = run(
+        configuration={
+            "settings_snapshot_version": "v1",
+            "rps_per_instance": 20,
+            "minimum_desired_capacity": 1,
+        }
+    )
+    outcome = FeedbackEvaluator().evaluate(
+        item,
+        EvaluationBundle(
+            (collected(0, 20, 1), collected(1, 55, 3), collected(2, 10, 1)),
+            (prediction(),),
+            (),
+            (),
+        ),
+    )
+
+    assert outcome.metrics.provisioning_efficiency_pct is not None
+    assert outcome.metrics.overprovisioned_instance_minutes is not None
+    assert outcome.metrics.underprovisioned_seconds is not None
 
 
 def test_missing_comparator_incomplete_and_zero_denominators_are_explicit() -> None:

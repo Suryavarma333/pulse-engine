@@ -59,6 +59,7 @@ def execute(
     python: str,
     evaluation_timeout_seconds: float = 45,
     idempotency_key: str | None = None,
+    pair_group_id: str | None = None,
 ) -> dict[str, Any]:
     plan = build_scenario_plan(scenario, seed=seed, smoke=smoke)
     started_at = datetime.now(UTC)
@@ -87,7 +88,13 @@ def execute(
             started_at=started_at,
             idempotency_key=key,
             host=host,
+            pair_group_id=pair_group_id,
         )
+        if started.get("status") != "running":
+            run_id = str(started["id"])
+            detail = api.run_detail(run_id)
+            export_evidence(detail, output_directory=output_directory, stem=stem)
+            return {"run_id": run_id, "terminal": started, "evidence": detail}
         run_id = str(started["id"])
         stop = threading.Event()
         signal_errors: list[Exception] = []
@@ -174,6 +181,10 @@ def main() -> int:
         "--idempotency-key",
         help="Stable retry key for resuming the same logical run start",
     )
+    parser.add_argument(
+        "--pair-group-id",
+        help="Stable identity shared by equal-input comparator and Pulse runs",
+    )
     args = parser.parse_args()
     outcome = execute(
         scenario=args.scenario,
@@ -190,6 +201,7 @@ def main() -> int:
         python=args.python,
         evaluation_timeout_seconds=args.evaluation_timeout_seconds,
         idempotency_key=args.idempotency_key,
+        pair_group_id=args.pair_group_id,
     )
     print(f"run_id={outcome['run_id']} status={outcome['terminal']['status']}")
     return 0

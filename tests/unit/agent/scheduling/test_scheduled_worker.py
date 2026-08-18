@@ -80,6 +80,7 @@ def worker(
     recovery_handler=None,
     clock=None,
     prediction_service=None,
+    observation_provider=None,
 ) -> ScheduledWorker:
     async def observe():
         return ScheduledControlObservation(
@@ -92,7 +93,7 @@ def worker(
         reader=reader,
         planner=RampPlanner(global_ceiling=3, derived_steps=4),
         response_pipeline=pipeline,
-        observation_provider=observe,
+        observation_provider=observation_provider or observe,
         recovery_plan=RecoveryPlan(
             low_threshold_rps=2,
             confirmation_count=2,
@@ -208,3 +209,33 @@ def test_invalid_event_fails_safe_without_exposing_exception_detail() -> None:
     assert result.held and result.reason == "scheduled_cycle_failed"
     assert service.health.status.value == "unavailable"
     assert "ValueError" in service.health.detail
+
+
+def test_overlapping_events_refresh_observation_before_each_command_group() -> None:
+    observations = 0
+
+    async def observe():
+        nonlocal observations
+        observations += 1
+        return ScheduledControlObservation(
+            current_capacity=observations,
+            current_shedding_level=SheddingLevel.NORMAL,
+            request_rate_rps=1,
+        )
+
+    pipeline = Pipeline()
+    service = worker(
+        Reader([event(name="first"), event(name="second")]),
+        pipeline,
+        observation_provider=observe,
+    )
+
+    asyncio.run(service.run_once())
+
+    assert observations == 2
+    event_capacities = [
+        values["current_capacity"]
+        for command, values in pipeline.executed
+        if ":protect:" not in command.idempotency_key
+    ]
+    assert event_capacities == [1, 2]

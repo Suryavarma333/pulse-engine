@@ -41,6 +41,15 @@ def test_high_load_interrupts_recovery_and_cooldown_immediately() -> None:
     assert machine.transition(ControlEvent.CONFIRMED_HIGH).current is ControlState.PROTECT
 
 
+@pytest.mark.parametrize(
+    "state",
+    [ControlState.WATCH, ControlState.RECOVERY, ControlState.COOLDOWN],
+)
+def test_scheduled_horizon_preempts_non_protect_transitional_states(state) -> None:
+    machine = ControlStateMachine(state)
+    assert machine.transition(ControlEvent.SCHEDULED_HORIZON).current is ControlState.PREWARM
+
+
 def test_invalid_transition_fails_closed() -> None:
     machine = ControlStateMachine()
     with pytest.raises(InvalidStateTransition):

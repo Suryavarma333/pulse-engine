@@ -88,10 +88,12 @@ class FeedbackEvaluator:
             run.locust_summary, snapshots, warnings
         )
         error_rate = self._error_rate(run.locust_summary, snapshots, warnings)
-        capacity_per_instance = self._positive_number(
-            run.configuration.get("rps_per_instance", 25.0), 25.0
+        capacity_per_instance = self._optional_positive_number(
+            run.configuration.get("rps_per_instance")
         )
-        floor = max(0, int(run.configuration.get("minimum_desired_capacity", 1)))
+        floor = self._optional_nonnegative_int(
+            run.configuration.get("minimum_desired_capacity")
+        )
         efficiency, over_minutes, under_seconds = self._provisioning(
             snapshots, capacity_per_instance, warnings
         )
@@ -292,7 +294,7 @@ class FeedbackEvaluator:
     @staticmethod
     def _provisioning(
         snapshots: list[Any],
-        capacity_per_instance: float,
+        capacity_per_instance: float | None,
         warnings: list[str],
     ) -> tuple[float | None, float | None, float | None]:
         required_minutes = 0.0
@@ -304,7 +306,12 @@ class FeedbackEvaluator:
             seconds = (following.observed_at - current.observed_at).total_seconds()
             if seconds <= 0 or current.asg_desired_capacity is None:
                 continue
-            required = math.ceil(float(current.origin_request_rate_rps) / capacity_per_instance)
+            effective_rps = getattr(current, "capacity_per_instance_rps", None)
+            if effective_rps is None or float(effective_rps) <= 0:
+                effective_rps = capacity_per_instance
+            if effective_rps is None:
+                continue
+            required = math.ceil(float(current.origin_request_rate_rps) / effective_rps)
             provisioned = int(current.asg_desired_capacity)
             minutes = seconds / 60
             required_minutes += required * minutes
@@ -328,11 +335,14 @@ class FeedbackEvaluator:
         snapshots: list[Any],
         *,
         actual_peak_at: datetime | None,
-        floor: int,
+        floor: int | None,
         ended_at: datetime | None,
         warnings: list[str],
     ) -> tuple[float | None, float | None]:
         if actual_peak_at is None:
+            return None, None
+        if floor is None:
+            warnings.append("recovery_capacity_floor_unavailable")
             return None, None
         after_peak = [item for item in snapshots if item.observed_at >= actual_peak_at]
         recovered = next(
@@ -371,6 +381,22 @@ class FeedbackEvaluator:
         except (TypeError, ValueError):
             return default
         return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _optional_positive_number(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _optional_nonnegative_int(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
 
 
 class FeedbackService:

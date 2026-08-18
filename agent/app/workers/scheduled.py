@@ -57,6 +57,8 @@ class ScheduledControlObservation:
     current_shedding_level: SheddingLevel
     demo_run_id: UUID | None = None
     request_rate_rps: float | None = None
+    observed_at: datetime | None = None
+    snapshot_id: int | None = None
 
 
 ObservationProvider = Callable[[], Awaitable[ScheduledControlObservation]]
@@ -151,11 +153,18 @@ class ScheduledWorker:
                     now=now,
                     lookahead_seconds=self._lookahead_seconds,
                 )
-                observation = await self._observe()
-                cycles = [
-                    await self._process_event(event, observation=observation, now=now)
-                    for event in events
-                ]
+                cycles = []
+                for event in events:
+                    # Each event receives a fresh authoritative capacity/tier observation;
+                    # distinct overlapping commands are serialized by the response arbiter.
+                    observation = await self._observe()
+                    cycles.append(
+                        await self._process_event(
+                            event,
+                            observation=observation,
+                            now=now,
+                        )
+                    )
             except Exception as exc:
                 self._set_health(
                     ProviderStatus.UNAVAILABLE, f"scheduled_cycle_failed:{type(exc).__name__}"

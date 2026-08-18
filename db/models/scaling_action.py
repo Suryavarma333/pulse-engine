@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     Uuid,
@@ -32,8 +33,19 @@ class ScalingAction(Base):
             "applied_desired_capacity IS NULL OR applied_desired_capacity >= 0",
             name="nonnegative_applied_capacity",
         ),
+        CheckConstraint(
+            "requested_shedding_level IS NULL OR "
+            "(requested_shedding_level >= 0 AND requested_shedding_level <= 3)",
+            name="requested_shedding_level_range",
+        ),
+        CheckConstraint(
+            "shedding_status IN ('not_requested', 'pending', 'succeeded')",
+            name="valid_shedding_status",
+        ),
+        CheckConstraint("shedding_attempts >= 0", name="nonnegative_shedding_attempts"),
         Index("ix_scaling_actions_correlation_id", "correlation_id"),
         Index("ix_scaling_actions_demo_run_requested_at", "demo_run_id", "requested_at"),
+        Index("ix_scaling_actions_pending_shedding", "shedding_status", "requested_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -67,6 +79,13 @@ class ScalingAction(Base):
     reason_code: Mapped[str] = mapped_column(String(60), nullable=False)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     signal_evidence: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    response_command: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+    requested_shedding_level: Mapped[int | None] = mapped_column(SmallInteger)
+    shedding_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="not_requested"
+    )
+    shedding_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shedding_error: Mapped[str | None] = mapped_column(Text)
     provider_request_id: Mapped[str | None] = mapped_column(String(160))
     error_message: Mapped[str | None] = mapped_column(Text)
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

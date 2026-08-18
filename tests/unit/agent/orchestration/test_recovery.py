@@ -128,6 +128,42 @@ def test_recovery_requires_exact_low_confirmation_and_unwinds_one_tier() -> None
     assert coordinator.cooldown_until == NOW + timedelta(seconds=62)
 
 
+def test_recovery_counts_one_persisted_snapshot_only_once_across_callers() -> None:
+    machine = ControlStateMachine(ControlState.PROTECT)
+    coordinator = RecoveryCoordinator(machine)
+    pipeline = FakePipeline(machine)
+    worker = RecoveryWorker(coordinator=coordinator, response_pipeline=pipeline)  # type: ignore[arg-type]
+    shared = observation(NOW)
+    shared = RecoveryObservation(
+        observed_at=shared.observed_at,
+        request_rate_rps=shared.request_rate_rps,
+        high_load=shared.high_load,
+        current_capacity=shared.current_capacity,
+        current_shedding_level=shared.current_shedding_level,
+        snapshot_id=41,
+    )
+
+    first = asyncio.run(worker.run_once(shared, command_template=template()))
+    duplicate = asyncio.run(
+        worker.run_once(
+            RecoveryObservation(
+                observed_at=NOW + timedelta(seconds=5),
+                request_rate_rps=1,
+                high_load=False,
+                current_capacity=3,
+                current_shedding_level=SheddingLevel.CACHED_NONCRITICAL,
+                snapshot_id=41,
+            ),
+            command_template=template(),
+        )
+    )
+
+    assert first.decision.confirmation_count == 1
+    assert duplicate.decision.reason_code == "recovery_duplicate_observation"
+    assert duplicate.decision.confirmation_count == 1
+    assert coordinator.low_confirmations == 1
+
+
 def test_scale_in_cooldown_audits_hold_then_restarts_confirmation() -> None:
     machine = ControlStateMachine(ControlState.PROTECT)
     coordinator = RecoveryCoordinator(machine)

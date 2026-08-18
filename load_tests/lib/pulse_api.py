@@ -49,6 +49,7 @@ class PulseApiClient:
         started_at: datetime,
         idempotency_key: str,
         host: str,
+        pair_group_id: str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "scenario_name": plan.name,
@@ -67,11 +68,11 @@ class PulseApiClient:
                 },
             },
             "thresholds": {
-                "onset_ratio": 1.2,
                 "comparator": "cpu_or_configured_reactive_load",
             },
             "started_at": _utc(started_at),
             "idempotency_key": idempotency_key,
+            "pair_group_id": pair_group_id,
         }
         return self._json(
             self._client.post(

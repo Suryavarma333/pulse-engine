@@ -224,5 +224,4 @@ class DemoRunRepository:
             and run.execution_mode == spec.execution_mode.value
             and run.configuration == spec.configuration
             and run.thresholds == spec.thresholds
-            and run.started_at == spec.started_at
         )

@@ -73,8 +73,11 @@ in-memory policy. The browser never uses that boundary.
    points. Restart catch-up audits obsolete points and executes only the latest safe due target.
 5. Both modes persist a prediction and create the same `ResponseCommand` with correlation,
    ceiling, tier request, evidence, reason, and recovery plan.
-6. The pipeline claims the action, clamps capacity, uses the sole adapter, records the outcome,
-   then applies any protection increase. Failed/unknown scale-in never lowers protection.
+6. One serialized cross-mode priority arbiter prefers protection over holds and recovery, refreshes
+   authoritative capacity/tier state, and retains the maximum active per-mode/event requirement.
+   Every non-recovery decrease and every recovery superseded by newer protection is held before the
+   claim/mutation path. The claimed action contains a durable tier outbox, so restart recovery never
+   repeats capacity while completing protection.
 7. Every real-time cycle feeds WATCH/protection evidence to the same state machine. Recovery
    requires an exact low-load count and cooldown, decreases capacity by a bounded step, unwinds
    one tier at a time, and is interrupted by renewed high load.
@@ -99,9 +102,9 @@ erDiagram
 
 Foreign keys preserve audit history with nullable references where deletion is allowed. Typed
 columns support time-bounded graph/result queries; JSONB is reserved for bounded signal/config
-evidence. Alembic revisions `20260818_0001`, `20260818_0002`, and the runtime-reliability
-revision `20260818_0003` all have downgrade paths. The last revision stores bounded response and
-tier retries separately from scaling-action capacity claims.
+evidence. Alembic revisions `20260818_0001` through `20260818_0004` all have downgrade paths. The
+latest revision adds typed per-instance capacity assumptions and an atomic scaling-action tier
+outbox; bounded retry rows remain useful for scheduled backoff but are not the sole recovery source.
 
 ## Failure boundaries
 
@@ -109,8 +112,9 @@ tier retries separately from scaling-action capacity claims.
 - Provider success with outcome-write failure: state becomes failure-safe/unknown; reconciliation
   reads provider state and blocks scale-in meanwhile.
 - Provider failure: audited; protection may increase, but cannot decrease.
-- Tier-control/dispatch failure: prior application policy stays active; a bounded retry is stored
-  separately from the capacity claim and reuses the same correlation.
+- Tier-control/dispatch failure: prior application policy stays active; the tier intent is already
+  present on the capacity claim and maintenance resumes it with the same correlation. A separate
+  bounded retry row supplies backoff when it is available.
 - Optional signal failure: visible provider health and lower confidence; origin processing continues.
 - Agent failure: the protected app continues serving its last durable tier; checkout stays normal.
 

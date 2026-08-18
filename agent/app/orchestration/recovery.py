@@ -18,6 +18,7 @@ class RecoveryObservation:
     high_load: bool
     current_capacity: int
     current_shedding_level: SheddingLevel
+    snapshot_id: int | None = None
 
     def __post_init__(self) -> None:
         ensure_utc(self.observed_at, field_name="observed_at")
@@ -52,6 +53,7 @@ class RecoveryCoordinator:
         self._states = state_machine
         self._low_confirmations = 0
         self._cooldown_until: datetime | None = None
+        self._last_low_evidence: tuple[str, int | datetime] | None = None
 
     @property
     def low_confirmations(self) -> int:
@@ -71,9 +73,11 @@ class RecoveryCoordinator:
         plan = command_template.recovery_plan
         if self._states.state is ControlState.FAILURE_SAFE:
             self._low_confirmations = 0
+            self._last_low_evidence = None
             return self._hold(observation, "recovery_failure_safe_hold")
         if observation.high_load:
             self._low_confirmations = 0
+            self._last_low_evidence = None
             if self._states.state is ControlState.PROTECT:
                 return self._hold(observation, "recovery_high_load_hold")
             self._cooldown_until = None
@@ -105,6 +109,7 @@ class RecoveryCoordinator:
             ControlState.PREWARM,
         }:
             self._low_confirmations = 0
+            self._last_low_evidence = None
             return self._hold(observation, "recovery_not_active")
 
         if self._cooldown_until is not None:
@@ -119,8 +124,17 @@ class RecoveryCoordinator:
 
         if observation.request_rate_rps > plan.low_threshold_rps:
             self._low_confirmations = 0
+            self._last_low_evidence = None
             return self._hold(observation, "recovery_load_not_low")
 
+        evidence_identity: tuple[str, int | datetime] = (
+            ("snapshot", observation.snapshot_id)
+            if observation.snapshot_id is not None
+            else ("observed_at", now)
+        )
+        if evidence_identity == self._last_low_evidence:
+            return self._hold(observation, "recovery_duplicate_observation")
+        self._last_low_evidence = evidence_identity
         self._low_confirmations += 1
         if self._low_confirmations < plan.confirmation_count:
             return self._hold(observation, "recovery_confirmation_pending")
@@ -269,6 +283,7 @@ def _recovery_command(
         "recovery_confirmation_count": decision.confirmation_count,
         "recovery_decision": decision.kind,
         "recovery_interrupted": decision.interrupted,
+        "recovery_snapshot_id": observation.snapshot_id,
     }
     payload.update(
         {

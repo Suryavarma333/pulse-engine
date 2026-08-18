@@ -48,6 +48,7 @@ def test_control_plane_extensions_have_typed_columns_and_audit_fks() -> None:
         "checkout_p99_latency_ms",
         "checkout_success_rate",
         "reactive_comparator_crossed",
+        "capacity_per_instance_rps",
     } <= set(tables["traffic_snapshots"].columns.keys())
     assert {
         "demo_run_id",
@@ -56,6 +57,12 @@ def test_control_plane_extensions_have_typed_columns_and_audit_fks() -> None:
         "reactive_comparator_crossed_at",
         "formula_version",
     } <= set(tables["surge_predictions"].columns.keys())
+    assert {
+        "response_command",
+        "requested_shedding_level",
+        "shedding_status",
+        "shedding_attempts",
+    } <= set(tables["scaling_actions"].columns.keys())
 
     for table_name in (
         "traffic_snapshots",
@@ -81,6 +88,7 @@ def test_query_indexes_cover_time_and_run_filters() -> None:
     assert "ix_load_shedding_events_demo_run_started_at" in indexes["load_shedding_events"]
     assert "ix_demo_runs_environment_started_at" in indexes["demo_runs"]
     assert "ix_response_retries_due" in indexes["response_retries"]
+    assert "ix_scaling_actions_pending_shedding" in indexes["scaling_actions"]
 
 
 def test_result_and_capacity_checks_are_registered() -> None:

@@ -58,9 +58,16 @@ class Reconciler:
 
 
 class Actions:
+    def __init__(self, pending=None):
+        self.pending = list(pending or [])
+
     async def has_unresolved(self, *, target_resource):
         assert target_resource == "pulse-asg"
         return False
+
+    async def list_pending_shedding(self, *, limit, max_attempts):
+        assert limit == 10 and max_attempts == 3
+        return self.pending[:limit]
 
 
 class Retries:
@@ -111,6 +118,13 @@ class Pipeline:
     async def retry_shedding(self, command, *, level):
         self.shedding.append((command, level))
         return SheddingControlResult(True, level, "event", {"checkout": "normal"})
+
+    async def resume_shedding(self, action):
+        command_value = ResponseCommand.model_validate(action.response_command)
+        return await self.retry_shedding(
+            command_value,
+            level=SheddingLevel(action.requested_shedding_level),
+        )
 
     async def execute(self, command, **values):
         self.dispatched.append((command, values))
@@ -231,6 +245,45 @@ def test_maintenance_never_restores_failure_safe_while_dependency_is_unready() -
     assert pipeline.recovered == []
     assert retention.calls == []
     assert worker.health.status is ProviderStatus.DEGRADED
+
+
+def test_maintenance_resumes_atomic_tier_outbox_after_restart() -> None:
+    pending = SimpleNamespace(
+        response_command=command().model_dump(mode="json"),
+        requested_shedding_level=int(SheddingLevel.DISABLE_RECOMMENDATIONS),
+    )
+    pipeline = Pipeline()
+
+    async def observation():
+        return MaintenanceObservation(3, SheddingLevel.NORMAL, 20.0)
+
+    async def probe():
+        return DependencyReadiness(True, ControlState.PROTECT, "dependencies_ready")
+
+    worker = ControlMaintenanceWorker(
+        reconciler=Reconciler(),  # type: ignore[arg-type]
+        retries=Retries([]),
+        actions=Actions([pending]),
+        response_pipeline=pipeline,  # type: ignore[arg-type]
+        observation_provider=observation,
+        dependency_probe=probe,
+        retention_store=Retention(),
+        target_resource="pulse-asg",
+        clock=Clock(),  # type: ignore[arg-type]
+        poll_seconds=1,
+        batch_size=10,
+        retry_max_attempts=3,
+        retry_backoff_seconds=2,
+        retention_enabled=False,
+        retention_seconds=600,
+        retention_batch_size=25,
+    )
+
+    asyncio.run(worker.run_once())
+
+    assert len(pipeline.shedding) == 1
+    assert pipeline.dispatched == []
+    assert "tier_outbox_completed=1" in worker.health.detail
 
 
 def test_retention_failure_degrades_maintenance_without_unbounded_retry_loop() -> None:

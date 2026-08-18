@@ -11,12 +11,13 @@ from agent.app.services.shedding_client import (
     SheddingControlError,
     SheddingControlResult,
 )
-from common.contracts import CapacityDecision, RecoveryPlan, ResponseCommand
+from common.contracts import CapacityDecision, CapacityState, RecoveryPlan, ResponseCommand
 from common.enums import (
     ActionStatus,
     ControlState,
     ExecutionMode,
     PredictionMode,
+    ProviderStatus,
     ResponseIntent,
     SheddingLevel,
 )
@@ -86,6 +87,19 @@ class FakeRepository:
                 target_resource=command.target_resource,
                 cooldown_until=None,
                 signal_evidence=command.signal_evidence,
+                response_command=command.model_dump(mode="json"),
+                requested_shedding_level=(
+                    None
+                    if command.requested_shedding_level is None
+                    else int(command.requested_shedding_level)
+                ),
+                shedding_status=(
+                    "not_requested"
+                    if command.requested_shedding_level is None
+                    else "pending"
+                ),
+                shedding_attempts=0,
+                shedding_error=None,
             )
             self.actions[command.idempotency_key] = action
             return SimpleNamespace(action=action, claimed=True)
@@ -105,6 +119,14 @@ class FakeRepository:
     async def record_control_error(self, **values):
         self.control_errors.append(values["error_message"])
         return self.actions[values["idempotency_key"]]
+
+    async def mark_shedding_outcome(self, **values):
+        action = self.actions[values["idempotency_key"]]
+        action.shedding_status = "succeeded" if values["succeeded"] else "pending"
+        if not values["succeeded"]:
+            action.shedding_attempts += 1
+        action.shedding_error = values.get("error_message")
+        return action
 
 
 class FakeCapacityAdapter:
@@ -143,6 +165,11 @@ class FakeRetryRepository:
     async def schedule_shedding(self, command, *, level, now, error_message):
         self.repository.retry_requests.append((command, level, now, error_message))
         return self
+
+
+class FailingRetryRepository(FakeRetryRepository):
+    async def schedule_shedding(self, command, *, level, now, error_message):
+        raise RuntimeError("retry store unavailable")
 
 
 class FakeSheddingClient:
@@ -289,7 +316,7 @@ def test_provider_failure_can_increase_protection_but_enters_failure_safe() -> N
     assert states.state is ControlState.FAILURE_SAFE
 
 
-def test_provider_failure_never_lowers_protection_tier() -> None:
+def test_non_recovery_command_never_lowers_capacity_or_protection_tier() -> None:
     response, repository, _, shedding, _, _ = pipeline(adapter_status=ActionStatus.FAILED)
     result = asyncio.run(
         response.execute(
@@ -300,8 +327,22 @@ def test_provider_failure_never_lowers_protection_tier() -> None:
         )
     )
     assert shedding.calls == 0
-    assert result.shedding_error == "shedding_reduction_held_after_capacity_failure"
-    assert repository.control_errors == [result.shedding_error]
+    assert result.capacity.status is ActionStatus.SKIPPED
+    assert result.shedding_error is None
+    assert repository.control_errors == []
+
+    tier_only = asyncio.run(
+        response.execute(
+            make_command(desired=3, tier=SheddingLevel.NORMAL).model_copy(
+                update={"idempotency_key": "realtime:tier-decrease"}
+            ),
+            current_capacity=3,
+            current_shedding_level=SheddingLevel.CACHED_NONCRITICAL,
+            requested_at=NOW,
+        )
+    )
+    assert tier_only.capacity.status is ActionStatus.SKIPPED
+    assert shedding.calls == 0
 
 
 def test_outcome_persistence_failure_is_unknown_and_stops_tier_attempt() -> None:
@@ -354,6 +395,275 @@ def test_shedding_failure_is_sanitized_audited_and_preserves_checkout_boundary()
     assert repository.retry_requests[0][0].idempotency_key == "realtime:test:1"
     assert repository.retry_requests[0][1] is SheddingLevel.DISABLE_RECOMMENDATIONS
     assert states.state is ControlState.FAILURE_SAFE
+
+
+def test_atomic_tier_intent_survives_retry_enqueue_failure_and_restart() -> None:
+    order: list[str] = []
+    repository = FakeRepository(order)
+    adapter = FakeCapacityAdapter(order, status=ActionStatus.DRY_RUN)
+    shedding = FakeSheddingClient(order, fail=True)
+    first = ResponsePipeline(
+        repository=repository,
+        capacity_adapter=adapter,
+        shedding_client=shedding,
+        state_machine=ControlStateMachine(),
+        global_ceiling=3,
+        retry_repository=FailingRetryRepository(repository),
+    )
+    command = make_command(desired=3)
+
+    failed = asyncio.run(
+        first.execute(
+            command,
+            current_capacity=1,
+            current_shedding_level=SheddingLevel.NORMAL,
+            requested_at=NOW,
+        )
+    )
+    persisted = repository.actions[command.idempotency_key]
+    assert failed.shedding_retry_scheduled is False
+    assert persisted.shedding_status == "pending"
+    assert persisted.shedding_attempts == 1
+
+    shedding.fail = False
+    restarted = ResponsePipeline(
+        repository=repository,
+        capacity_adapter=adapter,
+        shedding_client=shedding,
+        state_machine=ControlStateMachine(),
+        global_ceiling=3,
+    )
+    resumed = asyncio.run(
+        restarted.execute(
+            command,
+            current_capacity=3,
+            current_shedding_level=SheddingLevel.NORMAL,
+            requested_at=NOW,
+        )
+    )
+
+    assert resumed.duplicate is True
+    assert resumed.shedding is not None
+    assert repository.actions[command.idempotency_key].shedding_status == "succeeded"
+    assert adapter.calls == 1
+
+
+def test_durable_tier_retry_observes_completed_outbox_without_second_mutation() -> None:
+    class AlreadyAppliedShedding(FakeSheddingClient):
+        async def read_status(self):
+            return SimpleNamespace(level=SheddingLevel.DISABLE_RECOMMENDATIONS)
+
+    order: list[str] = []
+    repository = FakeRepository(order)
+    command = make_command(desired=3)
+    asyncio.run(
+        repository.claim(
+            command,
+            previous_desired_capacity=1,
+            execution_mode=ExecutionMode.DRY_RUN,
+            requested_at=NOW,
+            effective_ceiling=3,
+        )
+    )
+    shedding = AlreadyAppliedShedding(order)
+    response = ResponsePipeline(
+        repository=repository,
+        capacity_adapter=FakeCapacityAdapter(order),
+        shedding_client=shedding,
+        state_machine=ControlStateMachine(),
+        global_ceiling=3,
+    )
+
+    result = asyncio.run(
+        response.retry_shedding(
+            command,
+            level=SheddingLevel.DISABLE_RECOMMENDATIONS,
+        )
+    )
+
+    assert result.changed is False
+    assert shedding.calls == 0
+    assert repository.actions[command.idempotency_key].shedding_status == "succeeded"
+
+
+def test_cross_mode_arbiter_serializes_and_never_allows_protection_decrease() -> None:
+    class AuthoritativeAdapter(FakeCapacityAdapter):
+        def __init__(self, order):
+            super().__init__(order, status=ActionStatus.DRY_RUN)
+            self.current = 1
+            self.mutations = []
+
+        async def read_capacity(self, *, observed_at):
+            return SimpleNamespace(
+                state=CapacityState(
+                    desired=self.current,
+                    in_service=self.current,
+                    pending=0,
+                    observed_at=observed_at,
+                    provider_status=ProviderStatus.SIMULATED,
+                )
+            )
+
+        async def execute(self, *, requested_capacity, effective_ceiling, observed_at):
+            result = await super().execute(
+                requested_capacity=requested_capacity,
+                effective_ceiling=effective_ceiling,
+                observed_at=observed_at,
+            )
+            self.current = int(result.applied or self.current)
+            self.mutations.append(self.current)
+            return result
+
+    async def exercise():
+        order: list[str] = []
+        repository = FakeRepository(order)
+        adapter = AuthoritativeAdapter(order)
+        response = ResponsePipeline(
+            repository=repository,
+            capacity_adapter=adapter,
+            shedding_client=FakeSheddingClient(order),
+            state_machine=ControlStateMachine(),
+            global_ceiling=3,
+        )
+        realtime = make_command(key="realtime:protect", desired=3, tier=None).model_copy(
+            update={"intent": ResponseIntent.PROTECT}
+        )
+        scheduled = make_command(
+            key="scheduled:prewarm",
+            mode=PredictionMode.SCHEDULED,
+            desired=2,
+            tier=None,
+        ).model_copy(update={"intent": ResponseIntent.PREWARM})
+        await asyncio.gather(
+            response.execute(
+                realtime,
+                current_capacity=1,
+                current_shedding_level=SheddingLevel.NORMAL,
+                requested_at=NOW,
+            ),
+            response.execute(
+                scheduled,
+                current_capacity=1,
+                current_shedding_level=SheddingLevel.NORMAL,
+                requested_at=NOW,
+            ),
+        )
+        return adapter
+
+    adapter = asyncio.run(exercise())
+    assert adapter.current == 3
+    assert adapter.mutations == sorted(adapter.mutations)
+
+
+def test_priority_arbiter_supersedes_concurrent_recovery_with_protection() -> None:
+    async def exercise():
+        order: list[str] = []
+        repository = FakeRepository(order)
+        adapter = FakeCapacityAdapter(order, status=ActionStatus.DRY_RUN)
+        response = ResponsePipeline(
+            repository=repository,
+            capacity_adapter=adapter,
+            shedding_client=FakeSheddingClient(order),
+            state_machine=ControlStateMachine(ControlState.RECOVERY),
+            global_ceiling=3,
+        )
+        recovery = make_command(key="realtime:recover", desired=2, tier=None).model_copy(
+            update={"intent": ResponseIntent.RECOVER}
+        )
+        protection = make_command(key="realtime:renew", desired=3, tier=None).model_copy(
+            update={"intent": ResponseIntent.PROTECT}
+        )
+        recovered, protected = await asyncio.gather(
+            response.execute(
+                recovery,
+                current_capacity=3,
+                current_shedding_level=SheddingLevel.NORMAL,
+                requested_at=NOW,
+            ),
+            response.execute(
+                protection,
+                current_capacity=3,
+                current_shedding_level=SheddingLevel.NORMAL,
+                requested_at=NOW,
+            ),
+        )
+        return recovered, protected, adapter
+
+    recovered, protected, adapter = asyncio.run(exercise())
+    assert protected.capacity.status is ActionStatus.DRY_RUN
+    assert recovered.capacity.status is ActionStatus.SKIPPED
+    assert adapter.calls == 1
+
+
+def test_recovery_merges_distinct_active_scheduled_requirements() -> None:
+    response, _, adapter, _, states, _ = pipeline(adapter_status=ActionStatus.DRY_RUN)
+    first_event = uuid4()
+    second_event = uuid4()
+    first = make_command(
+        key="scheduled:first:prewarm",
+        mode=PredictionMode.SCHEDULED,
+        desired=3,
+        tier=None,
+    ).model_copy(update={"scheduled_event_id": first_event})
+    second = make_command(
+        key="scheduled:second:prewarm",
+        mode=PredictionMode.SCHEDULED,
+        desired=2,
+        tier=None,
+    ).model_copy(update={"scheduled_event_id": second_event})
+    asyncio.run(
+        response.execute(
+            first,
+            current_capacity=1,
+            current_shedding_level=SheddingLevel.NORMAL,
+            requested_at=NOW,
+        )
+    )
+    held = asyncio.run(
+        response.execute(
+            second,
+            current_capacity=3,
+            current_shedding_level=SheddingLevel.NORMAL,
+            requested_at=NOW,
+        )
+    )
+    assert held.capacity.status is ActionStatus.SKIPPED
+    states.transition(ControlEvent.EVENT_CANCELLED_LOW)
+
+    first_recovery = first.model_copy(
+        update={
+            "idempotency_key": "scheduled:first:recover",
+            "intent": ResponseIntent.RECOVER,
+            "requested_desired_capacity": 1,
+        }
+    )
+    blocked = asyncio.run(
+        response.execute(
+            first_recovery,
+            current_capacity=3,
+            current_shedding_level=SheddingLevel.NORMAL,
+            requested_at=NOW.replace(second=1),
+        )
+    )
+    assert blocked.capacity.status is ActionStatus.SKIPPED
+
+    second_recovery = second.model_copy(
+        update={
+            "idempotency_key": "scheduled:second:recover",
+            "intent": ResponseIntent.RECOVER,
+            "requested_desired_capacity": 1,
+        }
+    )
+    completed = asyncio.run(
+        response.execute(
+            second_recovery,
+            current_capacity=3,
+            current_shedding_level=SheddingLevel.NORMAL,
+            requested_at=NOW.replace(second=2),
+        )
+    )
+    assert completed.capacity.status is ActionStatus.DRY_RUN
+    assert adapter.calls == 2
 
 
 def test_failure_safe_state_audits_hold_and_performs_no_external_call() -> None:

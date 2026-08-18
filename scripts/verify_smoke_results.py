@@ -36,6 +36,19 @@ def validate_completed_run(detail: dict[str, Any], *, require_positive_lead: boo
         raise RuntimeError("completed smoke run has no linked prediction")
     if int(references.get("action_count", 0)) < 1:
         raise RuntimeError("completed smoke run has no linked response action")
+    for field in (
+        "provisioning_efficiency_pct",
+        "overprovisioned_instance_minutes",
+        "underprovisioned_seconds",
+    ):
+        if metrics.get(field) is None:
+            raise RuntimeError(f"completed smoke run has no {field} evidence")
+    raw = summary.get("raw") or {}
+    configuration = raw.get("configuration") or {}
+    if not configuration.get("settings_snapshot_version"):
+        raise RuntimeError("completed smoke run has no effective settings snapshot")
+    if float(configuration.get("rps_per_instance", 0)) <= 0:
+        raise RuntimeError("completed smoke run has no effective RPS-per-instance")
     if require_positive_lead:
         lead = metrics.get("detection_lead_seconds")
         if lead is None or float(lead) <= 0:

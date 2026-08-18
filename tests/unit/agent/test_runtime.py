@@ -88,9 +88,12 @@ def test_live_provider_assembly_uses_bounded_sdk_config_and_explicit_sources() -
         "sessions",
     ]
     assert omitted == ()
-    assert [service for service, _ in calls] == ["cloudwatch", "sqs"]
+    assert [service for service, _ in calls] == ["cloudwatch", "cloudwatch", "sqs"]
+    assert calls[0][1]["region_name"] == "ap-south-1"
+    assert calls[1][1]["region_name"] == "us-east-1"
     config = calls[0][1]["config"]
     assert config.connect_timeout == 2
     assert config.read_timeout == 4
     assert config.retries["total_max_attempts"] == 2
+    assert calls[1][1]["config"].read_timeout == 4
     asyncio.run(runtime.close())

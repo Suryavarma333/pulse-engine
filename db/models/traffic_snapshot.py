@@ -32,6 +32,10 @@ class TrafficSnapshot(Base):
         CheckConstraint("origin_request_rate_rps >= 0", name="nonnegative_origin_rate"),
         CheckConstraint("baseline_request_rate_rps >= 0", name="nonnegative_baseline_rate"),
         CheckConstraint(
+            "capacity_per_instance_rps IS NULL OR capacity_per_instance_rps > 0",
+            name="positive_capacity_per_instance",
+        ),
+        CheckConstraint(
             "error_rate IS NULL OR (error_rate >= 0 AND error_rate <= 1)", name="error_rate_range"
         ),
         CheckConstraint(
@@ -73,6 +77,7 @@ class TrafficSnapshot(Base):
     error_rate: Mapped[float | None] = mapped_column(Float)
     asg_desired_capacity: Mapped[int | None] = mapped_column(Integer)
     asg_in_service_capacity: Mapped[int | None] = mapped_column(Integer)
+    capacity_per_instance_rps: Mapped[float | None] = mapped_column(Float)
     load_shedding_level: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     reactive_comparator_crossed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False

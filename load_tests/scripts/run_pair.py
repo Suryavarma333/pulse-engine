@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from uuid import uuid4
 
 
 def main() -> int:
@@ -33,6 +34,9 @@ def main() -> int:
     ]
     if args.smoke:
         common.append("--smoke")
+    common.extend(
+        ["--pair-group-id", f"pair:{args.scenario}:{args.seed}:{uuid4()}"]
+    )
     for baseline in ("reactive_only", "pulse"):
         subprocess.run(
             [

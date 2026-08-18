@@ -66,6 +66,17 @@ class ScalingActionRepository:
             "reason_code": command.reason_code,
             "reasoning": command.reasoning,
             "signal_evidence": validate_evidence(command.signal_evidence),
+            "response_command": command.model_dump(mode="json"),
+            "requested_shedding_level": (
+                None
+                if command.requested_shedding_level is None
+                else int(command.requested_shedding_level)
+            ),
+            "shedding_status": (
+                "not_requested"
+                if command.requested_shedding_level is None
+                else "pending"
+            ),
         }
         statement = (
             insert(ScalingAction)
@@ -193,6 +204,58 @@ class ScalingActionRepository:
             action.error_message = f"{existing}{error_message}"[:2_000]
             await session.flush()
             return action
+
+    async def mark_shedding_outcome(
+        self,
+        *,
+        idempotency_key: str,
+        succeeded: bool,
+        error_message: str | None = None,
+    ) -> ScalingAction:
+        """Complete or retain the atomically claimed tier outbox stage."""
+
+        async with self._session_factory() as session, session.begin():
+            action = await session.scalar(
+                select(ScalingAction)
+                .where(ScalingAction.idempotency_key == idempotency_key)
+                .with_for_update()
+            )
+            if action is None:
+                raise LookupError(f"scaling action {idempotency_key!r} was not found")
+            action.shedding_status = "succeeded" if succeeded else "pending"
+            if not succeeded:
+                action.shedding_attempts += 1
+            action.shedding_error = (
+                None if succeeded or error_message is None else error_message[:2_000]
+            )
+            await session.flush()
+            return action
+
+    async def list_pending_shedding(
+        self, *, limit: int = 50, max_attempts: int = 5
+    ) -> list[ScalingAction]:
+        limit = min(max(limit, 1), self._limits.max_rows)
+        max_attempts = min(max(max_attempts, 1), 20)
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(ScalingAction)
+                .where(
+                    ScalingAction.shedding_status == "pending",
+                    ScalingAction.shedding_attempts < max_attempts,
+                    ScalingAction.status.in_(
+                        [
+                            ActionStatus.DRY_RUN.value,
+                            ActionStatus.NOOP.value,
+                            ActionStatus.CAPPED.value,
+                            ActionStatus.SUCCEEDED.value,
+                            ActionStatus.RECONCILED.value,
+                        ]
+                    ),
+                )
+                .order_by(ScalingAction.requested_at, ScalingAction.id)
+                .limit(limit)
+            )
+        return list(rows.all())
 
     async def list_bounded(
         self,

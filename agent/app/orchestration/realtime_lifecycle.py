@@ -68,11 +68,12 @@ class RealtimeControlLifecycle:
         request_rate = decision.snapshot.origin_request_rate_rps
         await self._recovery.run_once(
             RecoveryObservation(
-                observed_at=observed.observed_at,
+                observed_at=decision.snapshot.observed_at,
                 request_rate_rps=request_rate,
                 high_load=request_rate > active_command.recovery_plan.low_threshold_rps,
                 current_capacity=observed.current_capacity,
                 current_shedding_level=observed.current_shedding_level,
+                snapshot_id=decision.snapshot.id,
             ),
             command_template=active_command,
         )

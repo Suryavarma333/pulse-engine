@@ -19,7 +19,7 @@ from agent.app.metrics.providers.simulated import (
     SimulatedSignalProvider,
 )
 from agent.app.metrics.providers.sqs import SqsSignalProvider
-from common.contracts import SignalReading
+from common.contracts import CapacityState, SignalReading
 from common.enums import ProviderStatus
 
 NOW = datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
@@ -167,6 +167,52 @@ def test_provider_timeout_is_bounded_and_explicit() -> None:
 
     assert result.provider_health["slow"]["status"] == "unavailable"
     assert result.provider_health["slow"]["details"] == {"reason": "timeout"}
+
+
+def test_production_collector_persists_authoritative_capacity_and_rps_assumption() -> None:
+    class Capacity:
+        async def read_capacity(self, *, observed_at):
+            return type(
+                "Observation",
+                (),
+                {
+                    "state": CapacityState(
+                        desired=3,
+                        in_service=2,
+                        pending=1,
+                        observed_at=observed_at,
+                        provider_status=ProviderStatus.SIMULATED,
+                    )
+                },
+            )()
+
+    collector = CompositeSignalCollector(
+        [
+            FakeProvider(
+                "demo_app",
+                reading("demo_app", {"origin_request_rate_rps": 40}),
+                required=True,
+            )
+        ],
+        MemorySnapshotWriter(),
+        capacity_reader=Capacity(),
+        capacity_per_instance_rps=25,
+    )
+    collected = asyncio.run(collector.collect(now=NOW))
+    snapshot = collected.to_snapshot(
+        window_seconds=60,
+        baseline_request_rate_rps=10,
+        request_rate_change_rps=30,
+        request_acceleration_rps2=3,
+        queue_growth_per_second=None,
+        reactive_comparator_crossed=False,
+        evidence={"environment": "local"},
+    )
+
+    assert snapshot.asg_desired_capacity == 3
+    assert snapshot.asg_in_service_capacity == 2
+    assert snapshot.capacity_per_instance_rps == 25
+    assert collected.provider_health["capacity"]["included"] is True
 
 
 def test_simulated_buffer_enforces_ttl_duplicate_and_capacity_without_eviction() -> None:

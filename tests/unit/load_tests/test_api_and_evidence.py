@@ -46,6 +46,7 @@ def test_run_lifecycle_signal_and_idempotent_scoped_reset_contract() -> None:
             started_at=NOW,
             idempotency_key="stable-run-key",
             host="http://demo",
+            pair_group_id="pair:sudden:42",
         )
         api.publish_signal(
             plan.pulse_signals[0],
@@ -66,6 +67,7 @@ def test_run_lifecycle_signal_and_idempotent_scoped_reset_contract() -> None:
     start_payload = json.loads(requests[0].content)
     assert start_payload["configuration"]["seed"] == plan.seed
     assert start_payload["configuration"]["endpoint_weights"]["/checkout"] == 5
+    assert start_payload["pair_group_id"] == "pair:sudden:42"
     signal_payload = json.loads(requests[1].content)
     assert signal_payload["demo_run_id"] == "run-1"
     resets = [json.loads(item.content) for item in requests if item.url.host == "demo"]

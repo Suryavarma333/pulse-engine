@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from common.contracts import RecoveryPlan, ResponseCommand
-from common.enums import ExecutionMode, PredictionMode
+from common.enums import ActionStatus, ExecutionMode, PredictionMode, SheddingLevel
 from db.base import Base
 from db.models import ResponseRetry, ScalingAction, TrafficSnapshot
 from db.repositories.response_retries import ResponseRetryRepository
@@ -105,6 +105,7 @@ async def _exercise_runtime_maintenance(database_url: str) -> None:
         factory = async_sessionmaker(engine, expire_on_commit=False)
         snapshots = SnapshotRepository(factory)
         retries = ResponseRetryRepository(factory)
+        actions = ScalingActionRepository(factory)
         old = await snapshots.add(
             TrafficSnapshot(
                 environment="test",
@@ -163,6 +164,7 @@ async def _exercise_runtime_maintenance(database_url: str) -> None:
             target_resource="pulse-test",
             requested_desired_capacity=2,
             maximum_ceiling=3,
+            requested_shedding_level=SheddingLevel.DISABLE_RECOMMENDATIONS,
             reason_code="maintenance_test",
             reasoning="Persist retry separately from capacity claims",
             recovery_plan=RecoveryPlan(
@@ -188,12 +190,48 @@ async def _exercise_runtime_maintenance(database_url: str) -> None:
         assert len(await retries.list_due(now=now, limit=10)) == 1
         await retries.mark_succeeded(first.id, now=now)
 
+        claim = await actions.claim(
+            command.model_copy(update={"idempotency_key": "maintenance:tier-outbox"}),
+            previous_desired_capacity=1,
+            execution_mode=ExecutionMode.DRY_RUN,
+            requested_at=now,
+        )
+        assert claim.action.shedding_status == "pending"
+        await actions.update_outcome(
+            idempotency_key="maintenance:tier-outbox",
+            status=ActionStatus.DRY_RUN,
+            applied_desired_capacity=2,
+            executed_at=now,
+        )
+        await actions.mark_shedding_outcome(
+            idempotency_key="maintenance:tier-outbox",
+            succeeded=False,
+            error_message="retry enqueue unavailable",
+        )
+        pending = await actions.list_pending_shedding(limit=10, max_attempts=3)
+        outbox = next(
+            item
+            for item in pending
+            if item.idempotency_key == "maintenance:tier-outbox"
+        )
+        assert ResponseCommand.model_validate(outbox.response_command).correlation_id == (
+            command.correlation_id
+        )
+        await actions.mark_shedding_outcome(
+            idempotency_key="maintenance:tier-outbox",
+            succeeded=True,
+        )
+
         deleted = await snapshots.delete_expired(
             cutoff=now - timedelta(days=7),
             limit=1,
         )
         async with factory() as session:
-            action = await session.scalar(select(ScalingAction))
+            action = await session.scalar(
+                select(ScalingAction).where(
+                    ScalingAction.idempotency_key == "maintenance:audit-preserved"
+                )
+            )
             retry_count = await session.scalar(select(func.count()).select_from(ResponseRetry))
             snapshot_count = await session.scalar(
                 select(func.count()).select_from(TrafficSnapshot)

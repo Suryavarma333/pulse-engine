@@ -244,7 +244,7 @@ def build_signal_providers(
             },
         )
         cloudwatch = None
-        if settings.cloudwatch_cpu_enabled or settings.cloudfront_distribution_id:
+        if settings.cloudwatch_cpu_enabled:
             cloudwatch = factory(
                 "cloudwatch",
                 region_name=settings.aws_region,
@@ -263,10 +263,14 @@ def build_signal_providers(
             )
             omitted.remove("cloudwatch_cpu")
         if settings.cloudfront_distribution_id:
-            assert cloudwatch is not None
+            cloudfront_cloudwatch = factory(
+                "cloudwatch",
+                region_name="us-east-1",
+                config=sdk_config,
+            )
             providers.append(
                 CloudFrontSignalProvider(
-                    cloudwatch,
+                    cloudfront_cloudwatch,
                     settings.cloudfront_distribution_id,
                     timeout_seconds=settings.provider_timeout_seconds,
                     freshness_limit_seconds=settings.optional_signal_freshness_seconds,
@@ -372,6 +376,8 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         providers,
         snapshots,
         omitted_providers=omitted_providers,
+        capacity_reader=capacity,
+        capacity_per_instance_rps=settings.rps_per_instance,
     )
     prediction_service = PredictionService(
         predictions,
@@ -393,6 +399,8 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
             request_rate_rps=(
                 None if snapshot is None else snapshot.origin_request_rate_rps
             ),
+            observed_at=None if snapshot is None else snapshot.observed_at,
+            snapshot_id=None if snapshot is None else snapshot.id,
         )
 
     async def command_handler(command: ResponseCommand) -> None:
@@ -474,6 +482,7 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
                 high_load=not low,
                 current_capacity=observed.current_capacity,
                 current_shedding_level=observed.current_shedding_level,
+                snapshot_id=observed.snapshot_id,
             ),
             command_template=template,
         )
@@ -515,6 +524,8 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
             current_capacity=observed.current_capacity,
             current_shedding_level=observed.current_shedding_level,
             request_rate_rps=observed.request_rate_rps or 0.0,
+            observed_at=observed.observed_at,
+            snapshot_id=observed.snapshot_id,
         )
 
     async def maintenance_recovery(observed: MaintenanceObservation) -> None:
@@ -538,13 +549,14 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         )
         await recovery_worker.run_once(
             RecoveryObservation(
-                observed_at=clock.now(),
+                observed_at=observed.observed_at or clock.now(),
                 request_rate_rps=observed.request_rate_rps,
                 high_load=(
                     observed.request_rate_rps > recovery_plan.low_threshold_rps
                 ),
                 current_capacity=observed.current_capacity,
                 current_shedding_level=observed.current_shedding_level,
+                snapshot_id=observed.snapshot_id,
             ),
             command_template=template,
         )

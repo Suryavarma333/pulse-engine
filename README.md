@@ -111,8 +111,11 @@ PULSE_PYTHON=.venv/bin/python load_tests/scripts/run_pair.sh \
   --smoke
 ```
 
-Longer evidence runs omit `--smoke`. Every run records seed, endpoint weights, thresholds,
-execution mode, timestamps, raw Locust summary, formula version, and record references. Generated
+Longer evidence runs omit `--smoke`. Every run records seed, endpoint weights, a paired-run group
+identity, the server-sanitized effective detector/recovery/capacity configuration, execution mode,
+timestamps, raw Locust summary, formula version, and record references. Reusing an explicit run
+idempotency key resumes the original server record even when a restarted wrapper has a new local
+timestamp. Generated
 JSON/Markdown evidence is written to ignored `load_tests/results/`; use a completed run ID to
 re-export it:
 

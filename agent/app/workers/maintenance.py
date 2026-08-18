@@ -25,6 +25,8 @@ class MaintenanceObservation:
     current_capacity: int
     current_shedding_level: SheddingLevel
     request_rate_rps: float
+    observed_at: datetime | None = None
+    snapshot_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +58,10 @@ class RetryStore(Protocol):
 
 class ActionStateStore(Protocol):
     async def has_unresolved(self, *, target_resource: str) -> bool: ...
+
+    async def list_pending_shedding(
+        self, *, limit: int, max_attempts: int
+    ) -> list[Any]: ...
 
 
 class SnapshotRetentionStore(Protocol):
@@ -142,7 +148,20 @@ class ControlMaintenanceWorker:
                         target=readiness.recovered_target
                     )
                 completed = 0
+                tier_outbox_completed = 0
                 if readiness.ready and not unresolved:
+                    pending_tiers = await self._actions.list_pending_shedding(
+                        limit=self._batch_size,
+                        max_attempts=self._retry_max_attempts,
+                    )
+                    for action in pending_tiers:
+                        try:
+                            await self._pipeline.resume_shedding(action)
+                            tier_outbox_completed += 1
+                        except Exception:
+                            # The durable action remains pending with an incremented bounded
+                            # attempt count; a process restart can resume it without capacity work.
+                            continue
                     retries = await self._retries.list_due(
                         now=now,
                         limit=self._batch_size,
@@ -173,6 +192,7 @@ class ControlMaintenanceWorker:
             self._set_health(
                 status,
                 f"{readiness.detail};reconciled={len(reconciled)};"
+                f"tier_outbox_completed={tier_outbox_completed};"
                 f"retries_completed={completed};snapshots_deleted={deleted}",
             )
 

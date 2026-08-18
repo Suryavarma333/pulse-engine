@@ -53,6 +53,7 @@ class DemoRunStartRequest(ContractModel):
     execution_mode: ExecutionMode
     configuration: dict[str, Any] = Field(default_factory=dict)
     thresholds: dict[str, Any] = Field(default_factory=dict)
+    pair_group_id: str | None = Field(default=None, min_length=1, max_length=160)
     started_at: datetime | None = None
     idempotency_key: str = Field(min_length=1, max_length=160)
 
@@ -173,15 +174,71 @@ async def start_demo_run(
             status.HTTP_401_UNAUTHORIZED, "INVALID_CONTROL_TOKEN", "Invalid control token"
         )
     started_at = payload.started_at or request.app.state.clock.now()
+    settings = request.app.state.settings
+    workload_configuration = {
+        key: payload.configuration[key]
+        for key in ("seed", "duration_seconds", "host", "endpoint_weights")
+        if key in payload.configuration
+    }
+    effective_configuration = {
+        **workload_configuration,
+        "pair_group_id": payload.pair_group_id or f"run:{payload.idempotency_key}",
+        "settings_snapshot_version": "v1",
+        "rps_per_instance": settings.rps_per_instance,
+        "minimum_desired_capacity": settings.minimum_desired_capacity,
+        "global_instance_ceiling": settings.global_instance_ceiling,
+        "target_resource": settings.asg_name or "local-simulated-asg",
+        "effective_control": {
+            "baseline_strategy": settings.baseline_strategy,
+            "baseline_window_seconds": settings.baseline_window_seconds,
+            "minimum_samples": settings.minimum_samples,
+            "maximum_samples": settings.maximum_samples,
+            "metric_poll_seconds": settings.metric_poll_seconds,
+            "recovery_low_threshold_rps": settings.recovery_low_threshold_rps,
+            "recovery_confirmation_count": settings.recovery_confirmation_count,
+            "recovery_decrement_step": settings.recovery_decrement_step,
+            "cooldown_seconds": settings.cooldown_seconds,
+            "forecast_horizon_seconds": settings.forecast_horizon_seconds,
+            "optional_signal_freshness_seconds": (
+                settings.optional_signal_freshness_seconds
+            ),
+            "origin_signal_freshness_seconds": settings.origin_signal_freshness_seconds,
+            "scheduled_lookahead_seconds": settings.scheduled_lookahead_seconds,
+            "scheduled_ramp_steps": settings.scheduled_ramp_steps,
+            "near_event_protection_seconds": settings.near_event_protection_seconds,
+            "providers": {
+                "cloudwatch_cpu": settings.cloudwatch_cpu_enabled,
+                "cloudfront": bool(settings.cloudfront_distribution_id),
+                "cloudfront_region": (
+                    "us-east-1" if settings.cloudfront_distribution_id else None
+                ),
+                "workload_region": settings.aws_region,
+                "sqs": bool(settings.sqs_queue_url),
+                "sessions": bool(settings.session_signal_url),
+                "simulated": True,
+            },
+        },
+    }
+    effective_thresholds = {
+        "onset_ratio": 1.2,
+        "comparator": "cpu_or_configured_reactive_load",
+        "acceleration_threshold_rps2": settings.acceleration_threshold_rps2,
+        "entry_ratio_threshold": settings.entry_ratio_threshold,
+        "exit_ratio_threshold": settings.exit_ratio_threshold,
+        "confidence_threshold": settings.confidence_threshold,
+        "confirmation_count": settings.confirmation_count,
+        "reactive_cpu_threshold_pct": settings.reactive_cpu_threshold_pct,
+        "reactive_load_threshold_rps": settings.reactive_load_threshold_rps,
+    }
     spec = DemoRunSpec(
         idempotency_key=payload.idempotency_key,
         scenario_name=payload.scenario_name,
         mode=payload.mode,
         environment=payload.environment,
         baseline_type=payload.baseline_type,
-        execution_mode=payload.execution_mode,
-        configuration=payload.configuration,
-        thresholds=payload.thresholds,
+        execution_mode=settings.execution_mode,
+        configuration=effective_configuration,
+        thresholds=effective_thresholds,
         started_at=started_at,
     )
     try:

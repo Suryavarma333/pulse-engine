@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from agent.app.metrics.providers.base import SignalProvider
-from common.contracts import SignalReading
+from common.contracts import CapacityState, SignalReading
 from common.enums import ProviderStatus
 from common.time import ensure_utc
 from db.models import TrafficSnapshot
@@ -22,6 +22,10 @@ class RequiredSignalUnavailable(RuntimeError):
 
 class SnapshotWriter(Protocol):
     async def add(self, snapshot: TrafficSnapshot) -> TrafficSnapshot: ...
+
+
+class CapacityReader(Protocol):
+    async def read_capacity(self, *, observed_at: datetime) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,8 @@ class CollectedSignals:
     load_shedding_level: int
     optional_values: dict[str, float]
     provider_health: dict[str, dict[str, Any]]
+    capacity_state: CapacityState | None = None
+    capacity_per_instance_rps: float | None = None
     demo_run_id: UUID | None = None
 
     @property
@@ -81,6 +87,13 @@ class CollectedSignals:
             checkout_p99_latency_ms=self.checkout_p99_latency_ms,
             checkout_success_rate=self.checkout_success_rate,
             error_rate=self.error_rate,
+            asg_desired_capacity=(
+                None if self.capacity_state is None else self.capacity_state.desired
+            ),
+            asg_in_service_capacity=(
+                None if self.capacity_state is None else self.capacity_state.in_service
+            ),
+            capacity_per_instance_rps=self.capacity_per_instance_rps,
             load_shedding_level=self.load_shedding_level,
             reactive_comparator_crossed=reactive_comparator_crossed,
             signal_details=evidence,
@@ -101,6 +114,8 @@ class CompositeSignalCollector:
         *,
         origin_provider_name: str = "demo_app",
         omitted_providers: tuple[str, ...] = (),
+        capacity_reader: CapacityReader | None = None,
+        capacity_per_instance_rps: float | None = None,
     ) -> None:
         if not providers:
             raise ValueError("at least one provider is required")
@@ -111,6 +126,10 @@ class CompositeSignalCollector:
         self._providers = tuple(providers)
         self._writer = snapshot_writer
         self._origin_name = origin_provider_name
+        if capacity_per_instance_rps is not None and capacity_per_instance_rps <= 0:
+            raise ValueError("capacity_per_instance_rps must be positive")
+        self._capacity_reader = capacity_reader
+        self._capacity_per_instance_rps = capacity_per_instance_rps
         configured_names = {provider.name for provider in providers}
         if configured_names.intersection(omitted_providers):
             raise ValueError("configured providers cannot also be marked omitted")
@@ -187,6 +206,27 @@ class CompositeSignalCollector:
                 "collisions": sorted(set(collisions)),
             }
 
+        capacity_state: CapacityState | None = None
+        if self._capacity_reader is not None:
+            try:
+                capacity = await self._capacity_reader.read_capacity(observed_at=now)
+                capacity_state = capacity.state
+                health["capacity"] = {
+                    "status": capacity_state.provider_status.value,
+                    "included": True,
+                    "details": {
+                        "desired": capacity_state.desired,
+                        "in_service": capacity_state.in_service,
+                        "pending": capacity_state.pending,
+                    },
+                }
+            except Exception as exc:
+                health["capacity"] = {
+                    "status": ProviderStatus.UNAVAILABLE.value,
+                    "included": False,
+                    "details": {"reason": f"capacity_error:{type(exc).__name__}"},
+                }
+
         return CollectedSignals(
             observed_at=now,
             origin_observed_at=origin.observed_at,
@@ -202,6 +242,8 @@ class CompositeSignalCollector:
             load_shedding_level=int(origin.values.get("load_shedding_level", 0)),
             optional_values=optional_values,
             provider_health=health,
+            capacity_state=capacity_state,
+            capacity_per_instance_rps=self._capacity_per_instance_rps,
             demo_run_id=demo_run_id,
         )
 

@@ -50,6 +50,41 @@ def test_demo_run_start_requires_auth_and_is_idempotent(app_fixture) -> None:
     assert conflict.json()["code"] == "IDEMPOTENCY_CONFLICT"
 
 
+def test_demo_run_uses_server_effective_configuration_and_restart_safe_key(
+    app_fixture,
+) -> None:
+    payload = start_payload(
+        pair_group_id="pair:sudden:42",
+        configuration={"users": 10, "rps_per_instance": 999},
+        thresholds={"entry_ratio_threshold": 99, "confirmation_count": 99},
+    )
+    created = app_fixture.client.post(
+        "/internal/demo-runs", headers=HEADERS, json=payload
+    )
+    run = app_fixture.runs.by_id[next(iter(app_fixture.runs.by_id))]
+
+    assert created.status_code == 201
+    assert run.configuration["pair_group_id"] == "pair:sudden:42"
+    assert run.configuration["settings_snapshot_version"] == "v1"
+    assert run.configuration["rps_per_instance"] == 25
+    assert run.configuration["minimum_desired_capacity"] == 1
+    assert "users" not in run.configuration
+    assert run.configuration["effective_control"]["baseline_strategy"] == "moving_average"
+    assert run.thresholds["entry_ratio_threshold"] == 1.5
+    assert run.thresholds["confirmation_count"] == 3
+
+    restarted = app_fixture.client.post(
+        "/internal/demo-runs",
+        headers=HEADERS,
+        json={
+            **payload,
+            "started_at": (NOW + timedelta(seconds=30)).isoformat(),
+        },
+    )
+    assert restarted.status_code == 200
+    assert restarted.json()["id"] == created.json()["id"]
+
+
 def test_demo_run_completion_is_authenticated_idempotent_and_evaluated(app_fixture) -> None:
     created = app_fixture.client.post(
         "/internal/demo-runs", headers=HEADERS, json=start_payload()

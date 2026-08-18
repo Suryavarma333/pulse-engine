@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from common.contracts import QueryWindow, RecoveryPlan, ResponseCommand
-from common.enums import ExecutionMode, PredictionMode
+from common.enums import ExecutionMode, PredictionMode, SheddingLevel
 from db.models import ScalingAction
 from db.repositories.base import RepositoryLimits, bounded_limit
 from db.repositories.scaling_actions import ScalingActionRepository
@@ -73,6 +73,7 @@ def command() -> ResponseCommand:
         target_resource="pulse-demo",
         requested_desired_capacity=4,
         maximum_ceiling=3,
+        requested_shedding_level=SheddingLevel.DISABLE_RECOMMENDATIONS,
         reason_code="confirmed_acceleration",
         reasoning="Three consecutive accelerating samples",
         signal_evidence={"request_acceleration_rps2": 5.5},
@@ -134,6 +135,10 @@ def test_transactional_claim_returns_existing_action_for_duplicate_key() -> None
     assert duplicate.action.id == winner.action.id
     compiled = str(winner_session.statement.compile(dialect=postgresql.dialect()))
     assert "ON CONFLICT (idempotency_key) DO NOTHING" in compiled
+    params = winner_session.statement.compile(dialect=postgresql.dialect()).params
+    assert params["requested_shedding_level"] == 1
+    assert params["shedding_status"] == "pending"
+    assert params["response_command"]["idempotency_key"] == response_command.idempotency_key
 
 
 def test_repository_limits_reject_unbounded_queries() -> None:

@@ -108,6 +108,17 @@ class Actions:
             provider_request_id=None,
             error_message=None,
             cooldown_until=None,
+            response_command=command.model_dump(mode="json"),
+            requested_shedding_level=(
+                None
+                if command.requested_shedding_level is None
+                else int(command.requested_shedding_level)
+            ),
+            shedding_status=(
+                "not_requested"
+                if command.requested_shedding_level is None
+                else "pending"
+            ),
         )
         self.rows[command.idempotency_key] = action
         return SimpleNamespace(action=action, claimed=True)
@@ -120,6 +131,11 @@ class Actions:
 
     async def record_control_error(self, **values):
         raise AssertionError("assembled lifecycle should not fail tier control")
+
+    async def mark_shedding_outcome(self, **values):
+        action = self.rows[values["idempotency_key"]]
+        action.shedding_status = "succeeded" if values["succeeded"] else "pending"
+        return action
 
 
 class Shedding:
