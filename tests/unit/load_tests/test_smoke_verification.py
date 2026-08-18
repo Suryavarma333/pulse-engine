@@ -18,8 +18,17 @@ def completed_detail(*, lead: float | None = 2) -> dict:
                 "checkout_p99_latency_ms": 25,
                 "checkout_success_rate": 1,
                 "detection_lead_seconds": lead,
+                "provisioning_efficiency_pct": 80,
+                "overprovisioned_instance_minutes": 1,
+                "underprovisioned_seconds": 0,
             },
             "references": {"prediction_count": 1, "action_count": 1},
+            "raw": {
+                "configuration": {
+                    "settings_snapshot_version": "v1",
+                    "rps_per_instance": 25,
+                }
+            },
         },
     }
 

@@ -192,7 +192,7 @@ async def start_demo_run(
             "baseline_strategy": settings.baseline_strategy,
             "baseline_window_seconds": settings.baseline_window_seconds,
             "minimum_samples": settings.minimum_samples,
-            "maximum_samples": settings.maximum_samples,
+            "maximum_samples": settings.realtime_window_max_samples,
             "metric_poll_seconds": settings.metric_poll_seconds,
             "recovery_low_threshold_rps": settings.recovery_low_threshold_rps,
             "recovery_confirmation_count": settings.recovery_confirmation_count,
