@@ -24,6 +24,10 @@ def test_compose_dependency_order_health_and_bounded_defaults() -> None:
     assert "PULSE_EXECUTION_MODE: ${PULSE_EXECUTION_MODE:-dry_run}" in compose
     assert "PULSE_MAX_INSTANCE_CEILING: ${PULSE_MAX_INSTANCE_CEILING:-3}" in compose
     assert "PULSE_SIMULATED_DESIRED_CAPACITY" in compose
+    assert (
+        "PULSE_REACTIVE_LOAD_THRESHOLD_RPS: "
+        "${PULSE_REACTIVE_LOAD_THRESHOLD_RPS:-100000}" in compose
+    )
     assert "AWS_ACCESS_KEY_ID" not in compose
     assert "AWS_SECRET_ACCESS_KEY" not in compose
     assert "max-size: ${PULSE_LOG_MAX_SIZE:-10m}" in compose

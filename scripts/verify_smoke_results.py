@@ -39,7 +39,10 @@ def validate_completed_run(detail: dict[str, Any], *, require_positive_lead: boo
     if require_positive_lead:
         lead = metrics.get("detection_lead_seconds")
         if lead is None or float(lead) <= 0:
-            raise RuntimeError("sudden smoke did not predict before the reactive comparator")
+            raise RuntimeError(
+                "sudden smoke did not predict before the reactive comparator; "
+                f"detection_lead_seconds={lead!r}"
+            )
 
 
 def validate_scheduled_peak(actions: list[dict[str, Any]]) -> None:

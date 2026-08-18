@@ -67,7 +67,11 @@ PULSE_PYTHON=.venv/bin/python load_tests/scripts/run_sudden_spike.sh \
   --smoke
 ```
 
-The fixture publishes edge/queue/session-shaped evidence before its CPU comparator frame. Verify:
+The fixture publishes edge/queue/session-shaped evidence before its CPU comparator frame. The
+Compose profile defaults `PULSE_REACTIVE_LOAD_THRESHOLD_RPS` to `100000`, so the bounded smoke
+measures lead against that deterministic CPU frame instead of letting generated request rate trip
+the optional raw-load comparator first. Lower the setting when you intentionally want to exercise
+the raw-load comparator. Verify:
 
 ```bash
 curl -fsS 'http://localhost:8100/api/v1/predictions?mode=realtime&limit=20'
