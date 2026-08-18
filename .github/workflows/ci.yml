@@ -135,6 +135,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install infrastructure test dependency
+        run: python -m pip install --disable-pip-version-check 'pytest>=8,<9'
       - name: Verify cost and IAM safety assertions
         run: python -m pytest -q tests/unit/infra
 

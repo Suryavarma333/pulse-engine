@@ -47,7 +47,7 @@ def verify(*, demo_url: str, agent_url: str, token: str) -> None:
                 "level": level,
                 "reason_code": "stack_smoke",
                 "reasoning": f"Verify checkout at protection level {level}",
-                "changed_by": "ci",
+                "changed_by": "system",
                 "signal_evidence": {"scope": "bounded_stack_smoke"},
             },
         )
@@ -71,7 +71,7 @@ def verify(*, demo_url: str, agent_url: str, token: str) -> None:
             "level": 0,
             "reason_code": "stack_smoke_reset",
             "reasoning": "Return the bounded stack smoke to normal",
-            "changed_by": "ci",
+            "changed_by": "system",
             "signal_evidence": {"scope": "tier_only"},
         },
     )
