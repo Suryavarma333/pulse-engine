@@ -48,6 +48,19 @@ class AgentSettings(BaseModel):
     query_max_rows: int = Field(default=1_000, ge=1, le=1_000)
     provider_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
     optional_signal_freshness_seconds: int = Field(default=15, ge=1, le=3_600)
+    origin_signal_freshness_seconds: int = Field(default=10, ge=1, le=3_600)
+    signal_buffer_capacity: int = Field(default=1_000, ge=1, le=100_000)
+    simulated_signal_max_ttl_seconds: int = Field(default=300, ge=1, le=3_600)
+    simulated_signal_future_tolerance_seconds: int = Field(default=5, ge=0, le=300)
+    realtime_window_max_samples: int = Field(default=1_000, ge=2, le=100_000)
+    baseline_strategy: str = Field(
+        default="moving_average", pattern="^(moving_average|exponential)$"
+    )
+    exponential_smoothing_alpha: float = Field(default=0.35, gt=0, le=1)
+    reactive_cpu_threshold_pct: float = Field(default=70.0, ge=0, le=100)
+    reactive_load_threshold_rps: float = Field(default=50.0, gt=0)
+    forecast_horizon_seconds: int = Field(default=30, ge=1, le=3_600)
+    rps_per_instance: float = Field(default=25.0, gt=0)
 
     @model_validator(mode="after")
     def validate_safety_bounds(self) -> Self:
@@ -98,6 +111,19 @@ class AgentSettings(BaseModel):
             "PULSE_QUERY_MAX_ROWS": "query_max_rows",
             "PULSE_PROVIDER_TIMEOUT_SECONDS": "provider_timeout_seconds",
             "PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS": "optional_signal_freshness_seconds",
+            "PULSE_ORIGIN_SIGNAL_FRESHNESS_SECONDS": "origin_signal_freshness_seconds",
+            "PULSE_SIGNAL_BUFFER_CAPACITY": "signal_buffer_capacity",
+            "PULSE_SIMULATED_SIGNAL_MAX_TTL_SECONDS": "simulated_signal_max_ttl_seconds",
+            "PULSE_SIMULATED_SIGNAL_FUTURE_TOLERANCE_SECONDS": (
+                "simulated_signal_future_tolerance_seconds"
+            ),
+            "PULSE_REALTIME_WINDOW_MAX_SAMPLES": "realtime_window_max_samples",
+            "PULSE_BASELINE_STRATEGY": "baseline_strategy",
+            "PULSE_EXPONENTIAL_SMOOTHING_ALPHA": "exponential_smoothing_alpha",
+            "PULSE_REACTIVE_CPU_THRESHOLD_PCT": "reactive_cpu_threshold_pct",
+            "PULSE_REACTIVE_LOAD_THRESHOLD_RPS": "reactive_load_threshold_rps",
+            "PULSE_FORECAST_HORIZON_SECONDS": "forecast_horizon_seconds",
+            "PULSE_RPS_PER_INSTANCE": "rps_per_instance",
         }
         payload = {field: values[key] for key, field in field_map.items() if key in values}
         return cls.model_validate(payload)
