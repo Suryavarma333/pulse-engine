@@ -102,13 +102,22 @@ class RealtimeWorker:
             )
         async with self._cycle_lock:
             now = self._clock.now()
-            demo_run_id = (
-                await self._active_run_provider.current_demo_run_id(
-                    environment=self._environment
+            try:
+                demo_run_id = (
+                    await self._active_run_provider.current_demo_run_id(
+                        environment=self._environment
+                    )
+                    if self._active_run_provider is not None
+                    else None
                 )
-                if self._active_run_provider is not None
-                else None
-            )
+            except Exception as exc:
+                self._set_health(
+                    ProviderStatus.UNAVAILABLE,
+                    f"active_run_lookup_failed:{type(exc).__name__}",
+                )
+                return WorkerCycleResult(
+                    None, None, None, True, "active_run_lookup_failed"
+                )
             if demo_run_id != self._active_run_id:
                 self._detector.reset()
                 self._recorded_comparator_at = None
@@ -220,7 +229,15 @@ class RealtimeWorker:
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
-            await self.run_once()
+            try:
+                await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._set_health(
+                    ProviderStatus.UNAVAILABLE,
+                    f"cycle_failed:{type(exc).__name__}",
+                )
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self._poll_seconds)
             except TimeoutError:
