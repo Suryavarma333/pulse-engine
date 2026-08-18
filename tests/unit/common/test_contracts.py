@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 
 from common.contracts import (
     CapacityDecision,
+    DashboardSnapshotV1,
     DemoRunSpec,
     DemoRunState,
     QueryWindow,
@@ -124,6 +126,32 @@ def test_capacity_decision_never_accepts_applied_value_above_ceiling() -> None:
             execution_mode=ExecutionMode.DRY_RUN,
             status=ActionStatus.CAPPED,
         )
+
+
+@pytest.mark.parametrize(
+    ("desired", "in_service", "pending"),
+    [(3, 1, 2), (2, 3, 0), (None, 1, None)],
+)
+def test_dashboard_snapshot_v1_derives_nonnegative_pending_capacity(
+    desired: int | None,
+    in_service: int | None,
+    pending: int | None,
+) -> None:
+    record = SimpleNamespace(
+        id=1,
+        environment="local",
+        observed_at=NOW,
+        window_seconds=60,
+        origin_request_rate_rps=10,
+        baseline_request_rate_rps=8,
+        asg_desired_capacity=desired,
+        asg_in_service_capacity=in_service,
+    )
+
+    snapshot = DashboardSnapshotV1.from_record(record)
+
+    assert snapshot.schema_version == "pulse.snapshot.v1"
+    assert snapshot.pending_capacity == pending
 
 
 @pytest.mark.parametrize("key", ["control_token", "aws_secret", "cart_id", "user_id"])

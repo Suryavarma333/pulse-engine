@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -202,6 +202,122 @@ class WorkerHealth(ContractModel):
     @field_validator("checked_at")
     @classmethod
     def timestamp_is_utc(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+
+class DashboardSnapshotV1(BaseModel):
+    """Stable read contract consumed by the operator dashboard.
+
+    The persistence model intentionally keeps provider-specific ASG column names. This DTO
+    makes those names explicit at the HTTP boundary and derives pending capacity from the two
+    durable observations so the browser never depends on ORM serialization details.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    schema_version: Literal["pulse.snapshot.v1"] = "pulse.snapshot.v1"
+    id: int | None = Field(default=None, ge=1)
+    environment: str = Field(min_length=1, max_length=32)
+    demo_run_id: UUID | None = None
+    observed_at: datetime
+    window_seconds: int = Field(ge=1)
+    origin_request_rate_rps: float = Field(ge=0)
+    baseline_request_rate_rps: float = Field(ge=0)
+    request_count: int = Field(default=0, ge=0)
+    concurrent_requests: int = Field(default=0, ge=0)
+    request_rate_change_rps: float = 0.0
+    request_acceleration_rps2: float = 0.0
+    edge_request_rate_rps: float | None = Field(default=None, ge=0)
+    queue_depth: int | None = Field(default=None, ge=0)
+    queue_growth_per_second: float | None = None
+    concurrent_sessions: int | None = Field(default=None, ge=0)
+    login_rate_rps: float | None = Field(default=None, ge=0)
+    cpu_utilization_pct: float | None = Field(default=None, ge=0, le=100)
+    p50_latency_ms: float | None = Field(default=None, ge=0)
+    p95_latency_ms: float | None = Field(default=None, ge=0)
+    p99_latency_ms: float | None = Field(default=None, ge=0)
+    checkout_p99_latency_ms: float | None = Field(default=None, ge=0)
+    checkout_success_rate: float | None = Field(default=None, ge=0, le=1)
+    error_rate: float | None = Field(default=None, ge=0, le=1)
+    asg_desired_capacity: int | None = Field(default=None, ge=0)
+    asg_in_service_capacity: int | None = Field(default=None, ge=0)
+    pending_capacity: int | None = Field(default=None, ge=0)
+    capacity_per_instance_rps: float | None = Field(default=None, gt=0)
+    load_shedding_level: int = Field(default=0, ge=0, le=3)
+    reactive_comparator_crossed: bool = False
+    signal_details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+    @field_validator("observed_at", "created_at")
+    @classmethod
+    def timestamps_are_utc(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
+
+    @classmethod
+    def from_record(cls, record: Any) -> Self:
+        desired = getattr(record, "asg_desired_capacity", None)
+        in_service = getattr(record, "asg_in_service_capacity", None)
+        pending = (
+            None
+            if desired is None or in_service is None
+            else max(int(desired) - int(in_service), 0)
+        )
+        return cls(
+            id=getattr(record, "id", None),
+            environment=record.environment,
+            demo_run_id=getattr(record, "demo_run_id", None),
+            observed_at=record.observed_at,
+            window_seconds=record.window_seconds,
+            origin_request_rate_rps=record.origin_request_rate_rps,
+            baseline_request_rate_rps=record.baseline_request_rate_rps,
+            request_count=getattr(record, "request_count", 0) or 0,
+            concurrent_requests=getattr(record, "concurrent_requests", 0) or 0,
+            request_rate_change_rps=getattr(record, "request_rate_change_rps", 0.0)
+            or 0.0,
+            request_acceleration_rps2=getattr(
+                record, "request_acceleration_rps2", 0.0
+            )
+            or 0.0,
+            edge_request_rate_rps=getattr(record, "edge_request_rate_rps", None),
+            queue_depth=getattr(record, "queue_depth", None),
+            queue_growth_per_second=getattr(record, "queue_growth_per_second", None),
+            concurrent_sessions=getattr(record, "concurrent_sessions", None),
+            login_rate_rps=getattr(record, "login_rate_rps", None),
+            cpu_utilization_pct=getattr(record, "cpu_utilization_pct", None),
+            p50_latency_ms=getattr(record, "p50_latency_ms", None),
+            p95_latency_ms=getattr(record, "p95_latency_ms", None),
+            p99_latency_ms=getattr(record, "p99_latency_ms", None),
+            checkout_p99_latency_ms=getattr(record, "checkout_p99_latency_ms", None),
+            checkout_success_rate=getattr(record, "checkout_success_rate", None),
+            error_rate=getattr(record, "error_rate", None),
+            asg_desired_capacity=desired,
+            asg_in_service_capacity=in_service,
+            pending_capacity=pending,
+            capacity_per_instance_rps=getattr(
+                record, "capacity_per_instance_rps", None
+            ),
+            load_shedding_level=getattr(record, "load_shedding_level", 0) or 0,
+            reactive_comparator_crossed=bool(
+                getattr(record, "reactive_comparator_crossed", False)
+            ),
+            signal_details=getattr(record, "signal_details", {}) or {},
+            created_at=getattr(record, "created_at", None),
+        )
+
+
+class DashboardSnapshotPageV1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, populate_by_name=True, allow_inf_nan=False
+    )
+
+    items: tuple[DashboardSnapshotV1, ...]
+    next_cursor: str | None = Field(default=None, max_length=1_024)
+    from_: datetime = Field(alias="from")
+    to: datetime
+
+    @field_validator("from_", "to")
+    @classmethod
+    def timestamps_are_utc(cls, value: datetime) -> datetime:
         return ensure_utc(value)
 
 

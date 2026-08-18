@@ -14,7 +14,7 @@ from botocore.exceptions import (
 )
 
 from common.contracts import CapacityDecision, CapacityState
-from common.enums import ActionStatus, ExecutionMode, ProviderStatus
+from common.enums import ActionStatus, ExecutionMode, ProviderStatus, ResponseIntent
 from common.time import ensure_utc
 
 _SECRET_PATTERN = re.compile(
@@ -128,6 +128,7 @@ class AutoScalingCapacityAdapter:
         requested_capacity: int,
         effective_ceiling: int,
         observed_at: datetime,
+        intent: ResponseIntent = ResponseIntent.DETECTOR,
     ) -> CapacityDecision:
         ensure_utc(observed_at, field_name="observed_at")
         if requested_capacity < 0:
@@ -165,13 +166,27 @@ class AutoScalingCapacityAdapter:
                     status=ActionStatus.CAPPED if capped else ActionStatus.NOOP,
                     provider_request_id=current.provider_request_id,
                 )
+            scale_in = target < current.state.desired
+            if scale_in and intent is not ResponseIntent.RECOVER:
+                return CapacityDecision(
+                    requested=requested_capacity,
+                    applied=None,
+                    ceiling=ceiling,
+                    execution_mode=self.execution_mode,
+                    status=ActionStatus.FAILED,
+                    sanitized_error="non_recovery_scale_in_blocked",
+                )
             assert self._client is not None
             try:
                 response = await asyncio.to_thread(
                     self._client.set_desired_capacity,
                     AutoScalingGroupName=self.target_resource,
                     DesiredCapacity=target,
-                    HonorCooldown=True,
+                    # Protective and scheduled increases have already passed Pulse's
+                    # serialized priority and ceiling checks and must not be delayed by the
+                    # ASG's scale-in-oriented cooldown. Recovery decreases retain both the
+                    # coordinator guard and the provider cooldown.
+                    HonorCooldown=scale_in,
                 )
             except Exception as exc:
                 return CapacityDecision(

@@ -219,8 +219,8 @@ function trafficSeries(data: DashboardData | null | undefined) {
 function capacitySeries(data: DashboardData | null | undefined) {
   const snapshots = [...(data?.snapshots ?? [])].reverse();
   return [
-    { label: "Desired", color: "#9b87ff", points: snapshots.map((item) => ({ at: item.observed_at ?? "", value: item.desired_capacity })) },
-    { label: "In service", color: "#37d7c2", points: snapshots.map((item) => ({ at: item.observed_at ?? "", value: item.in_service_capacity })) },
+    { label: "Desired", color: "#9b87ff", points: snapshots.map((item) => ({ at: item.observed_at ?? "", value: item.asg_desired_capacity })) },
+    { label: "In service", color: "#37d7c2", points: snapshots.map((item) => ({ at: item.observed_at ?? "", value: item.asg_in_service_capacity })) },
     { label: "Pending", color: "#f0b35f", points: snapshots.map((item) => ({ at: item.observed_at ?? "", value: item.pending_capacity })) },
   ];
 }

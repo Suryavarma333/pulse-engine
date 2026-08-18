@@ -139,7 +139,9 @@ class FakeCapacityAdapter:
         self.calls = 0
         self.effective_ceiling = None
 
-    async def execute(self, *, requested_capacity, effective_ceiling, observed_at):
+    async def execute(
+        self, *, requested_capacity, effective_ceiling, observed_at, intent=None
+    ):
         self.order.append("adapter")
         self.calls += 1
         self.effective_ceiling = effective_ceiling
@@ -504,7 +506,9 @@ def test_cross_mode_arbiter_serializes_and_never_allows_protection_decrease() ->
                 )
             )
 
-        async def execute(self, *, requested_capacity, effective_ceiling, observed_at):
+        async def execute(
+            self, *, requested_capacity, effective_ceiling, observed_at, intent=None
+        ):
             result = await super().execute(
                 requested_capacity=requested_capacity,
                 effective_ceiling=effective_ceiling,

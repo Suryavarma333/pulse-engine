@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
+from pathlib import Path
 from uuid import uuid4
 
+from common.contracts import DashboardSnapshotV1, WorkerHealth
+from common.enums import ProviderStatus
 from tests.api.agent.conftest import NOW
 
 
@@ -33,6 +37,38 @@ def test_dashboard_origin_can_read_but_is_never_credentialed(app_fixture) -> Non
     assert "access-control-allow-credentials" not in response.headers
 
 
+def test_health_returns_503_for_runtime_dependency_or_mandatory_worker_failure(
+    app_fixture,
+) -> None:
+    worker = app_fixture.components.workers[0]
+    worker.health = WorkerHealth(
+        name="fake",
+        status=ProviderStatus.UNAVAILABLE,
+        checked_at=NOW,
+        detail="persistence_failed:OperationalError",
+    )
+    failed_worker = app_fixture.client.get("/health")
+
+    assert failed_worker.status_code == 503
+    assert failed_worker.json()["ready"] is False
+
+    worker.health = WorkerHealth(
+        name="fake",
+        status=ProviderStatus.HEALTHY,
+        checked_at=NOW,
+        detail="recovered",
+    )
+    app_fixture.client.app.state.db_ready = False
+    database_outage = app_fixture.client.get("/health")
+    app_fixture.client.app.state.db_ready = True
+    recovered = app_fixture.client.get("/health")
+
+    assert database_outage.status_code == 503
+    assert database_outage.json()["database"] == {"ready": False}
+    assert recovered.status_code == 200
+    assert recovered.json()["ready"] is True
+
+
 def test_all_bounded_history_and_result_endpoints_return_page_contract(app_fixture) -> None:
     start = (NOW - timedelta(minutes=1)).isoformat()
     end = (NOW + timedelta(minutes=1)).isoformat()
@@ -54,7 +90,25 @@ def test_all_bounded_history_and_result_endpoints_return_page_contract(app_fixtu
         body = response.json()
         assert len(body["items"]) == 1
         assert body["next_cursor"] == "next-page"
-        assert body["from"].endswith("+00:00")
+        assert body["from"].endswith(("+00:00", "Z"))
+
+
+def test_snapshot_endpoint_matches_dashboard_v1_contract(app_fixture) -> None:
+    fixture_path = (
+        Path(__file__).parents[3]
+        / "dashboard"
+        / "tests"
+        / "fixtures"
+        / "snapshot-page-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))["items"][0]
+
+    response = app_fixture.client.get("/api/v1/snapshots?limit=1")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert DashboardSnapshotV1.model_validate(item).pending_capacity == 1
+    assert {key: item[key] for key in fixture} == fixture
 
 
 def test_query_range_limit_and_cursor_validation_return_structured_422(app_fixture) -> None:

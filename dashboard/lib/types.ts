@@ -35,19 +35,20 @@ export interface OperationalStatus extends JsonObject {
   providers: Record<string, ProviderHealth>;
   workers: Array<{ name: string; status: string; detail?: string | null }>;
   scheduled: { next_due_at?: string | null; event?: JsonObject | null };
-  latest_snapshot?: Snapshot | null;
+  latest_snapshot?: SnapshotV1 | null;
 }
 
-export interface Snapshot extends JsonObject {
+export interface SnapshotV1 extends JsonObject {
+  schema_version: "pulse.snapshot.v1";
   id?: number;
   observed_at?: string;
   origin_request_rate_rps?: number;
   baseline_request_rate_rps?: number;
   checkout_p99_latency_ms?: number | null;
   checkout_success_rate?: number | null;
-  desired_capacity?: number | null;
-  in_service_capacity?: number | null;
-  pending_capacity?: number | null;
+  asg_desired_capacity: number | null;
+  asg_in_service_capacity: number | null;
+  pending_capacity: number | null;
   load_shedding_level?: number;
 }
 
@@ -97,7 +98,7 @@ export interface DemoResult extends JsonObject {
 
 export interface DashboardData {
   status: OperationalStatus | null;
-  snapshots: Snapshot[];
+  snapshots: SnapshotV1[];
   predictions: Prediction[];
   actions: ScalingAction[];
   sheddingEvents: JsonObject[];

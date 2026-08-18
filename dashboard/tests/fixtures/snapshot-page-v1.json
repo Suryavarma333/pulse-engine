@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "schema_version": "pulse.snapshot.v1",
+      "id": 1,
+      "environment": "local",
+      "observed_at": "2026-08-18T12:00:00Z",
+      "window_seconds": 60,
+      "origin_request_rate_rps": 25,
+      "baseline_request_rate_rps": 10,
+      "checkout_p99_latency_ms": 120,
+      "checkout_success_rate": 0.99,
+      "asg_desired_capacity": 2,
+      "asg_in_service_capacity": 1,
+      "pending_capacity": 1,
+      "load_shedding_level": 1
+    }
+  ],
+  "next_cursor": "next-page",
+  "from": "2026-08-18T11:59:00Z",
+  "to": "2026-08-18T12:01:00Z"
+}

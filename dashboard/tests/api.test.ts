@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { boundedWindow, fetchDashboard, READ_ONLY_PATHS } from "../lib/api";
+import snapshotPageV1 from "./fixtures/snapshot-page-v1.json";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -55,6 +56,39 @@ describe("read-only dashboard API", () => {
 
     await expect(fetchDashboard("http://agent", 900, controller.signal)).rejects.toMatchObject({
       name: "AbortError",
+    });
+  });
+
+  it("consumes the production snapshot v1 capacity contract", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v1/snapshots") {
+        return response(200, snapshotPageV1);
+      }
+      if (url.pathname === "/api/v1/status") {
+        return response(200, {
+          environment: "local", execution_mode: "dry_run", global_ceiling: 3,
+          state: "watch", database_ready: true, demo_app_ready: true, capacity: null,
+          capacity_error: null, shedding_level: 0, endpoint_policy: {}, providers: {},
+          workers: [], scheduled: {},
+        });
+      }
+      return response(200, { items: [], next_cursor: null, from: "", to: "" });
+    }));
+
+    const data = await fetchDashboard(
+      "http://agent.example",
+      3_600,
+      new AbortController().signal,
+      new Date("2026-08-18T12:01:00Z"),
+    );
+
+    expect(data.warnings).toEqual([]);
+    expect(data.snapshots[0]).toMatchObject({
+      schema_version: "pulse.snapshot.v1",
+      asg_desired_capacity: 2,
+      asg_in_service_capacity: 1,
+      pending_capacity: 1,
     });
   });
 });

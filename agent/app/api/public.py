@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from agent.app.services.feedback import FeedbackEvaluator
-from common.contracts import QueryWindow
+from common.contracts import DashboardSnapshotPageV1, DashboardSnapshotV1, QueryWindow
 from common.time import ensure_utc
 from db.repositories.operator import InvalidCursor
 
@@ -100,6 +100,10 @@ def _row(value: Any) -> dict[str, Any]:
     return result
 
 
+def _snapshot_row(value: Any) -> dict[str, Any]:
+    return DashboardSnapshotV1.from_record(value).model_dump(mode="json")
+
+
 def _json_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return ensure_utc(value).isoformat()
@@ -137,7 +141,15 @@ async def operational_status(request: Request, environment: str | None = None) -
         capacity_error = f"capacity_unavailable:{type(exc).__name__}"
     snapshot = rows["snapshot"]
     active_shedding = rows["shedding"]
-    workers = [_worker(item) for item in request.app.state.workers]
+    runtime_workers = list(request.app.state.workers)
+    supervisor = getattr(request.app.state, "dependency_supervisor", None)
+    if supervisor is not None:
+        runtime_workers.append(supervisor)
+    worker_tasks = getattr(request.app.state, "worker_tasks_by_name", {})
+    workers = [
+        _worker(item, task=worker_tasks.get(getattr(item, "name", "")))
+        for item in runtime_workers
+    ]
     scheduled = getattr(request.app.state, "scheduled_worker", None)
     next_due = None if scheduled is None else scheduled.next_due_at
     provider_health = dict(getattr(request.app.state, "provider_configuration", {}))
@@ -172,7 +184,7 @@ async def operational_status(request: Request, environment: str | None = None) -
                 request.app.state.recovery_coordinator, "low_confirmations", 0
             ),
         },
-        "latest_snapshot": None if snapshot is None else _row(snapshot),
+        "latest_snapshot": None if snapshot is None else _snapshot_row(snapshot),
         "latest_prediction": (
             None if rows["prediction"] is None else _row(rows["prediction"])
         ),
@@ -188,7 +200,7 @@ async def operational_status(request: Request, environment: str | None = None) -
     }
 
 
-@router.get("/snapshots")
+@router.get("/snapshots", response_model=DashboardSnapshotPageV1)
 async def snapshots(
     request: Request,
     environment: str | None = None,
@@ -197,7 +209,7 @@ async def snapshots(
     limit: PageLimit = None,
     cursor: PageCursor = None,
     demo_run_id: UUID | None = None,
-) -> dict[str, Any]:
+) -> DashboardSnapshotPageV1:
     window = _window(request, from_, to, limit)
     page = await _query(
         request.app.state.operator_store.snapshots(
@@ -207,7 +219,12 @@ async def snapshots(
             demo_run_id=demo_run_id,
         )
     )
-    return _page(page, window)
+    return DashboardSnapshotPageV1(
+        items=tuple(DashboardSnapshotV1.from_record(item) for item in page.items),
+        next_cursor=page.next_cursor,
+        from_=window.start,
+        to=window.end,
+    )
 
 
 @router.get("/predictions")
@@ -257,7 +274,7 @@ async def prediction_detail(
         "predicted_points": [_row(item) for item in overlay.points],
         "actions": [_row(item) for item in overlay.actions],
         "load_shedding_events": [_row(item) for item in overlay.shedding_events],
-        "actual_snapshots": [_row(item) for item in overlay.actual_snapshots],
+        "actual_snapshots": [_snapshot_row(item) for item in overlay.actual_snapshots],
     }
 
 
@@ -380,7 +397,22 @@ async def result_run_detail(
     return payload
 
 
-def _worker(worker: Any) -> dict[str, Any]:
+def _worker(worker: Any, *, task: asyncio.Task[Any] | None = None) -> dict[str, Any]:
+    if task is not None and task.done():
+        detail = "worker_task_stopped"
+        if not task.cancelled():
+            try:
+                exception = task.exception()
+            except asyncio.InvalidStateError:
+                exception = None
+            if exception is not None:
+                detail = f"worker_task_failed:{type(exception).__name__}"
+        return {
+            "name": getattr(worker, "name", type(worker).__name__),
+            "status": "unavailable",
+            "checked_at": None,
+            "detail": detail,
+        }
     health = getattr(worker, "health", None)
     if health is not None:
         return health.model_dump(mode="json")

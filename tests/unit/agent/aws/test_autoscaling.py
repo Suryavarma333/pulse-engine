@@ -7,7 +7,7 @@ import boto3
 from botocore.exceptions import ReadTimeoutError
 
 from agent.app.aws.autoscaling import AutoScalingCapacityAdapter
-from common.enums import ActionStatus, ExecutionMode, ProviderStatus
+from common.enums import ActionStatus, ExecutionMode, ProviderStatus, ResponseIntent
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
@@ -106,9 +106,98 @@ def test_live_mode_reads_then_sets_capacity_and_captures_request_id() -> None:
         {
             "AutoScalingGroupName": "pulse-asg",
             "DesiredCapacity": 3,
+            "HonorCooldown": False,
+        }
+    ]
+
+
+def test_live_recovery_decrease_honors_provider_cooldown() -> None:
+    client = FakeAutoScalingClient(desired=3)
+    decision = asyncio.run(
+        adapter(mode=ExecutionMode.LIVE, client=client).execute(
+            requested_capacity=2,
+            effective_ceiling=3,
+            observed_at=NOW,
+            intent=ResponseIntent.RECOVER,
+        )
+    )
+
+    assert decision.status is ActionStatus.SUCCEEDED
+    assert client.set_calls == [
+        {
+            "AutoScalingGroupName": "pulse-asg",
+            "DesiredCapacity": 2,
             "HonorCooldown": True,
         }
     ]
+
+
+def test_live_emergency_scale_out_interrupts_recovery_cooldown() -> None:
+    client = FakeAutoScalingClient(desired=3)
+    capacity = adapter(mode=ExecutionMode.LIVE, client=client)
+
+    recovery = asyncio.run(
+        capacity.execute(
+            requested_capacity=2,
+            effective_ceiling=3,
+            observed_at=NOW,
+            intent=ResponseIntent.RECOVER,
+        )
+    )
+    emergency = asyncio.run(
+        capacity.execute(
+            requested_capacity=3,
+            effective_ceiling=3,
+            observed_at=NOW,
+            intent=ResponseIntent.PROTECT,
+        )
+    )
+
+    assert recovery.status is ActionStatus.SUCCEEDED
+    assert emergency.status is ActionStatus.SUCCEEDED
+    assert [call["HonorCooldown"] for call in client.set_calls] == [True, False]
+
+
+def test_live_successive_scheduled_ramp_steps_bypass_provider_cooldown() -> None:
+    client = FakeAutoScalingClient(desired=1)
+    capacity = adapter(mode=ExecutionMode.LIVE, client=client)
+
+    first = asyncio.run(
+        capacity.execute(
+            requested_capacity=2,
+            effective_ceiling=3,
+            observed_at=NOW,
+            intent=ResponseIntent.PREWARM,
+        )
+    )
+    second = asyncio.run(
+        capacity.execute(
+            requested_capacity=3,
+            effective_ceiling=3,
+            observed_at=NOW,
+            intent=ResponseIntent.PREWARM,
+        )
+    )
+
+    assert first.status is second.status is ActionStatus.SUCCEEDED
+    assert [call["DesiredCapacity"] for call in client.set_calls] == [2, 3]
+    assert all(call["HonorCooldown"] is False for call in client.set_calls)
+
+
+def test_live_adapter_rejects_non_recovery_scale_in_defensively() -> None:
+    client = FakeAutoScalingClient(desired=3)
+    decision = asyncio.run(
+        adapter(mode=ExecutionMode.LIVE, client=client).execute(
+            requested_capacity=2,
+            effective_ceiling=3,
+            observed_at=NOW,
+            intent=ResponseIntent.PROTECT,
+        )
+    )
+
+    assert decision.status is ActionStatus.FAILED
+    assert decision.sanitized_error == "non_recovery_scale_in_blocked"
+    assert client.set_calls == []
 
 
 def test_live_mode_applies_internal_second_clamp_and_noops_equal_current() -> None:

@@ -35,7 +35,9 @@ class CapacityAdapter:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def execute(self, *, requested_capacity, effective_ceiling, observed_at):
+    async def execute(
+        self, *, requested_capacity, effective_ceiling, observed_at, intent=None
+    ):
         self.calls += 1
         await asyncio.sleep(0)
         return CapacityDecision(

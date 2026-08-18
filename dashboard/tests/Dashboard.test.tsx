@@ -2,7 +2,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Dashboard } from "../components/Dashboard";
-import type { DashboardData } from "../lib/types";
+import type { DashboardData, SnapshotV1 } from "../lib/types";
+import snapshotPageV1 from "./fixtures/snapshot-page-v1.json";
+
+const snapshotFixture = snapshotPageV1.items[0] as SnapshotV1;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -90,8 +93,8 @@ function healthyData(seconds = 3_600): DashboardData {
       },
     },
     snapshots: [
-      { observed_at: "2026-08-18T10:00:02Z", origin_request_rate_rps: 42.5, baseline_request_rate_rps: 8, checkout_p99_latency_ms: 84, checkout_success_rate: 1, desired_capacity: 3, in_service_capacity: 2, pending_capacity: 1 },
-      { observed_at: "2026-08-18T10:00:00Z", origin_request_rate_rps: 8, baseline_request_rate_rps: 8, checkout_p99_latency_ms: 60, checkout_success_rate: 1, desired_capacity: 1, in_service_capacity: 1, pending_capacity: 0 },
+      { ...snapshotFixture, observed_at: "2026-08-18T10:00:02Z", origin_request_rate_rps: 42.5, baseline_request_rate_rps: 8, checkout_p99_latency_ms: 84, checkout_success_rate: 1, asg_desired_capacity: 3, asg_in_service_capacity: 2, pending_capacity: 1 },
+      { ...snapshotFixture, id: 2, observed_at: "2026-08-18T10:00:00Z", origin_request_rate_rps: 8, baseline_request_rate_rps: 8, checkout_p99_latency_ms: 60, checkout_success_rate: 1, asg_desired_capacity: 1, asg_in_service_capacity: 1, pending_capacity: 0 },
     ],
     predictions: [
       { id: "p1", created_at: "2026-08-18T10:00:01Z", predicted_peak_at: "2026-08-18T10:00:30Z", predicted_peak_rps: 70 },

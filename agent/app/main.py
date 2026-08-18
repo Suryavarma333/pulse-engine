@@ -52,6 +52,7 @@ from agent.app.services.feedback import FeedbackEvaluator, FeedbackService, Feed
 from agent.app.services.predictions import PredictionService
 from agent.app.services.ramp_planner import RampPlanner
 from agent.app.services.shedding_client import DemoAppSheddingClient
+from agent.app.workers.dependencies import DependencySupervisor
 from agent.app.workers.maintenance import (
     ControlMaintenanceWorker,
     DependencyReadiness,
@@ -115,7 +116,8 @@ def create_app(
         _install_state(app, assembled)
         stop_event = asyncio.Event()
         tasks: list[asyncio.Task[Any]] = []
-        if start_workers and assembled.db_ready:
+        task_by_worker: dict[str, asyncio.Task[Any]] = {}
+        if start_workers:
             for worker in assembled.workers:
                 if isinstance(worker, FeedbackWorker):
                     coroutine = worker.run(
@@ -123,17 +125,39 @@ def create_app(
                     )
                 else:
                     coroutine = worker.run(stop_event)
-                tasks.append(asyncio.create_task(coroutine, name=f"pulse-{worker.name}"))
+                task = asyncio.create_task(coroutine, name=f"pulse-{worker.name}")
+                tasks.append(task)
+                task_by_worker[worker.name] = task
         app.state.worker_tasks = tasks
-        app.state.worker_available = assembled.db_ready and (
-            bool(tasks) or not start_workers
-        )
+        app.state.worker_tasks_by_name = task_by_worker
+        app.state.worker_execution_enabled = start_workers
+        app.state.worker_available = bool(tasks) or not start_workers
+        supervisor_task: asyncio.Task[Any] | None = None
+        if start_workers and assembled.database is not None:
+            supervisor = DependencySupervisor(
+                probe=lambda: _database_ready(assembled.database),
+                publish=lambda ready: _publish_database_readiness(app, ready),
+                clock=assembled.clock,
+                poll_seconds=min(configured.maintenance_poll_seconds, 5.0),
+            )
+            app.state.dependency_supervisor = supervisor
+            supervisor_task = asyncio.create_task(
+                supervisor.run(stop_event), name="pulse-dependency-supervisor"
+            )
+            task_by_worker[supervisor.name] = supervisor_task
+        else:
+            app.state.dependency_supervisor = None
+        app.state.dependency_supervisor_task = supervisor_task
+        _publish_database_readiness(app, assembled.db_ready)
         try:
             yield
         finally:
             stop_event.set()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            runtime_tasks = [*tasks]
+            if supervisor_task is not None:
+                runtime_tasks.append(supervisor_task)
+            if runtime_tasks:
+                await asyncio.gather(*runtime_tasks, return_exceptions=True)
             if assembled.shedding_client is not None:
                 await assembled.shedding_client.close()
             if assembled.runtime is not None:
@@ -186,16 +210,20 @@ def create_app(
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:
-        ready = bool(request.app.state.db_ready and request.app.state.worker_available)
+        runtime_workers = list(request.app.state.workers)
+        supervisor = getattr(request.app.state, "dependency_supervisor", None)
+        if supervisor is not None:
+            runtime_workers.append(supervisor)
         workers = [
-            {
-                "name": getattr(worker, "name", type(worker).__name__),
-                "status": _worker_status(worker),
-                "detail": _worker_detail(worker),
-            }
-            for worker in request.app.state.workers
+            _worker_runtime_view(request.app.state, worker)
+            for worker in runtime_workers
         ]
         degraded = any(item["status"] in {"degraded", "unavailable"} for item in workers)
+        worker_available = _worker_runtime_available(request.app.state)
+        request.app.state.worker_available = bool(
+            request.app.state.db_ready and worker_available
+        )
+        ready = bool(request.app.state.db_ready and worker_available and not degraded)
         payload = {
             "service": "pulse-agent",
             "environment": request.app.state.settings.environment,
@@ -661,6 +689,38 @@ def _install_state(app: FastAPI, components: AgentComponents) -> None:
         None,
     )
     app.state.db_ready = components.db_ready
+
+
+def _publish_database_readiness(app: FastAPI, ready: bool) -> None:
+    app.state.db_ready = ready
+    app.state.worker_available = bool(ready and _worker_runtime_available(app.state))
+
+
+def _worker_runtime_available(state: Any) -> bool:
+    if not getattr(state, "worker_execution_enabled", False):
+        return True
+    tasks = getattr(state, "worker_tasks", ())
+    return bool(tasks) and all(not task.done() for task in tasks)
+
+
+def _worker_runtime_view(state: Any, worker: Any) -> dict[str, Any]:
+    name = getattr(worker, "name", type(worker).__name__)
+    task = getattr(state, "worker_tasks_by_name", {}).get(name)
+    if task is not None and task.done():
+        detail = "worker_task_stopped"
+        if not task.cancelled():
+            try:
+                exception = task.exception()
+            except asyncio.InvalidStateError:
+                exception = None
+            if exception is not None:
+                detail = f"worker_task_failed:{type(exception).__name__}"
+        return {"name": name, "status": "unavailable", "detail": detail}
+    return {
+        "name": name,
+        "status": _worker_status(worker),
+        "detail": _worker_detail(worker),
+    }
 
 
 def _worker_status(worker: Any) -> str:

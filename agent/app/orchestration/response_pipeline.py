@@ -36,6 +36,7 @@ class CapacityAdapter(Protocol):
         requested_capacity: int,
         effective_ceiling: int,
         observed_at: datetime,
+        intent: ResponseIntent = ResponseIntent.DETECTOR,
     ) -> CapacityDecision: ...
 
 
@@ -318,6 +319,7 @@ class ResponsePipeline:
             requested_capacity=command.requested_desired_capacity,
             effective_ceiling=effective_ceiling,
             observed_at=requested_at,
+            intent=command.intent,
         )
         scale_in_applied = (
             decision.applied is not None

@@ -7,7 +7,7 @@ import type {
   Prediction,
   ScalingAction,
   ScheduledEvent,
-  Snapshot,
+  SnapshotV1,
 } from "./types";
 
 export const READ_ONLY_PATHS = [
@@ -68,7 +68,7 @@ export async function fetchDashboard(
   };
   const requests = [
     getJson<OperationalStatus>(url("/api/v1/status", false), signal),
-    getJson<ApiPage<Snapshot>>(url("/api/v1/snapshots"), signal),
+    getJson<ApiPage<JsonObject>>(url("/api/v1/snapshots"), signal),
     getJson<ApiPage<Prediction>>(url("/api/v1/predictions"), signal),
     getJson<ApiPage<ScalingAction>>(url("/api/v1/scaling-actions"), signal),
     getJson<ApiPage<JsonObject>>(url("/api/v1/load-shedding-events"), signal),
@@ -79,14 +79,21 @@ export async function fetchDashboard(
   if (signal.aborted) {
     throw new DOMException("Polling request was cancelled", "AbortError");
   }
+  const snapshotPage = value(settled[1], emptyPage<JsonObject>());
+  const snapshots = snapshotPage.items.filter(isSnapshotV1);
   const warnings = settled.flatMap((result, index) =>
     result.status === "rejected"
       ? [`${READ_ONLY_PATHS[index]} unavailable: ${safeMessage(result.reason)}`]
       : [],
   );
+  if (snapshots.length !== snapshotPage.items.length) {
+    warnings.push(
+      "/api/v1/snapshots returned an unsupported snapshot contract; invalid rows were omitted",
+    );
+  }
   return {
     status: value(settled[0], null),
-    snapshots: value(settled[1], emptyPage<Snapshot>()).items,
+    snapshots,
     predictions: value(settled[2], emptyPage<Prediction>()).items,
     actions: value(settled[3], emptyPage<ScalingAction>()).items,
     sheddingEvents: value(settled[4], emptyPage<JsonObject>()).items,
@@ -108,4 +115,16 @@ function emptyPage<T extends JsonObject>(): ApiPage<T> {
 
 function safeMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : "request failed";
+}
+
+function isSnapshotV1(value: JsonObject): value is SnapshotV1 {
+  return value.schema_version === "pulse.snapshot.v1"
+    && typeof value.observed_at === "string"
+    && nullableNumber(value.asg_desired_capacity)
+    && nullableNumber(value.asg_in_service_capacity)
+    && nullableNumber(value.pending_capacity);
+}
+
+function nullableNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
 }
