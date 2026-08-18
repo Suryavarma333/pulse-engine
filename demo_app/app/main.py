@@ -63,7 +63,10 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.settings = app_settings
-    app.state.traffic_metrics = TrafficMetrics(app_settings.metrics_window_seconds)
+    app.state.traffic_metrics = TrafficMetrics(
+        app_settings.metrics_window_seconds,
+        app_settings.metrics_max_samples,
+    )
     app.state.noncritical_limiter = TokenBucket(
         rate_per_second=app_settings.noncritical_rate_per_second,
         burst=app_settings.noncritical_rate_burst,
