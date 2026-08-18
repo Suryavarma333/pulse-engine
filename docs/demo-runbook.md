@@ -36,6 +36,16 @@ curl -fsS http://localhost:8100/api/v1/status
 The agent status must say `dry_run`, its global ceiling must be at most three, and the protected
 app must report `critical_path_protected: true`.
 
+Confirm the schema is at the final head (`20260818_0004`):
+
+```bash
+docker compose run --rm migrate alembic -c db/alembic.ini current
+```
+
+The agent `/health` endpoint checks the live worker tasks and may return 503 during a recoverable
+database/client outage. Keep the process running while dependencies recover; the independent
+supervisor recreates them and health returns to 200 only after every mandatory worker is live.
+
 ## 2. Scheduled Diwali smoke
 
 The wrapper seeds one deterministic `source=load_test` event relative to the current UTC clock.
@@ -149,13 +159,18 @@ smokes with bounded plans, verifies all four checkout tiers, and removes only th
 | Symptom | Check | Safe response |
 |---|---|---|
 | `migrate` exits | `docker compose logs migrate postgres` | fix DB URL/readiness; rerun `docker compose up --wait` |
-| agent 503 | agent log plus `/health` database/worker fields | keep dry-run; restore origin/DB; no mutation is attempted |
+| agent 503 | agent log plus `/health` database/worker fields | keep dry-run; restore origin/DB and let the supervisor recreate dependencies; no mutation is attempted while unavailable |
 | no real-time prediction | `/metrics/snapshot`, provider health, sample/confirmation/confidence evidence | run the deterministic smoke; do not lower thresholds blindly |
 | scheduled point absent | event UTC times, timezone, status, ramp offsets, agent clock | reseed relative event; verify clock/NTP |
 | run stuck pending | feedback worker health and run evidence window | wait bounded evaluation timeout; reset/cancel if incomplete |
 | dashboard partial warning | browser-visible agent URL/CORS and failing API path | fix `NEXT_PUBLIC_PULSE_API_URL`; no token belongs in browser |
 | port in use | `docker compose ps` and local listeners | change `PULSE_*_PORT` values in uncommitted `.env` |
 | live startup blocked | execution mode, region, ASG, ceiling, standard credential chain | treat as intentional fail-closed; return to dry-run |
+
+Raw traffic snapshots are retained for seven days by default and pruned by maintenance in batches of
+500. Export run evidence before that window or explicitly increase
+`PULSE_TRAFFIC_SNAPSHOT_RETENTION_DAYS` and review storage impact. Predictions, actions, protection
+events, scheduled events, and run evidence are not part of that raw-snapshot cleanup.
 
 ## 8. Optional AWS plan/apply/destroy
 
@@ -185,3 +200,8 @@ terraform -chdir=infra destroy -var-file=environments/demo.auto.tfvars
 Confirm the ASG, launch template, alarm, instance profile, role, and policy are gone. Applying the
 stack alone does not enable live Pulse mutation; `PULSE_EXECUTION_MODE=live`, region, ASG name,
 application ceiling, and credentials are separate explicit runtime inputs.
+
+For optional live signals, CPU and SQS metrics use the configured workload region, while CloudFront
+metrics use the separately configured global metrics region (normally `us-east-1`). Live protection
+and prewarm scale-out intentionally bypass ASG cooldown; gradual recovery scale-in honors it. Review
+both regions, the target ASG, and the ceiling in the plan and runtime status before enabling mutation.

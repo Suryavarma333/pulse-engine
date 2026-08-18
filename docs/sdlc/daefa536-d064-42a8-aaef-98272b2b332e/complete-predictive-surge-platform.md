@@ -6,17 +6,39 @@
 
 **Title:** Complete Predictive Surge Platform
 
-**Version:** 1.0
+**Version:** 1.1 (post-implementation sync)
 
-**Status:** PENDING_APPROVAL
+**Status:** IMPLEMENTED
+
+**Implemented at:** `2026-08-18T17:09:31Z`
+
+**As-built application SHA:** `034b82df24fda3abf9bd83eb48e229e885601385`
+
+**Documentation-sync source SHA:** `41da588c0fea3d170bfbb848b5884a5d21bb4de2`
 
 **RDD reference:** [complete-predictive-surge-platform-requirements.md](./complete-predictive-surge-platform-requirements.md)
 
 ## 1. System overview
 
-Pulse will extend the current protected FastAPI commerce application and PostgreSQL schema into a complete, local-first predictive traffic-surge platform. It will continuously collect application and optional leading signals, identify scheduled ramps and unplanned acceleration, turn either detection mode into one safety-bounded response command, and use that command to pre-scale capacity and progressively reduce non-critical work. The critical checkout path remains normal at all protection levels. All predictions and response outcomes, including dry-run, capped, skipped, failed, and recovery decisions, are persisted with UTC timestamps, correlation, evidence, and human-readable reasoning.
+Pulse extends the protected FastAPI commerce application and PostgreSQL schema into a complete,
+local-first predictive traffic-surge platform. The as-built agent continuously collects application
+and optional leading signals, detects scheduled ramps and unplanned acceleration, and turns both
+modes into the same immutable `ResponseCommand`. One serialized priority arbiter refreshes
+authoritative capacity and tier state, preserves the strongest active requirement, and routes safe
+work through one audited response pipeline and one Auto Scaling adapter. The critical checkout
+path remains normal at all protection levels. Predictions and every response outcome—including
+dry-run, capped, skipped, failed, unknown, reconciled, tier-outbox, retry, and recovery decisions—
+are persisted with UTC timestamps, correlation, bounded evidence, and human-readable reasoning.
 
-The repository remains one modular monolith with separately runnable processes: the protected demo application, a Pulse control-plane API/worker, a Next.js operator dashboard, PostgreSQL, on-demand Locust drivers, and Terraform for an optional small AWS deployment. The mandatory acceptance path runs locally through Docker Compose without AWS credentials. The same control-plane boundary can read AWS metrics and call EC2 Auto Scaling when an operator explicitly enables live mode. Simple rolling statistics and exponential smoothing are replaceable forecasting strategies; no heavyweight machine-learning runtime is required for the complete v1 platform.
+The repository is a multi-service monorepo with separately runnable processes: the protected demo
+application, a FastAPI Pulse control plane with real-time, scheduled, feedback, maintenance, and
+dependency-supervision loops, a read-only Next.js operator dashboard, PostgreSQL, on-demand Locust
+drivers, and Terraform for an optional small AWS target. Dashboard traffic history uses the
+explicit `pulse.snapshot.v1` DTO rather than ORM serialization. The mandatory acceptance path runs
+through Docker Compose without AWS credentials. Explicit live mode may use workload-region
+CloudWatch CPU and SQS signals, `us-east-1` CloudFront metrics, an HTTP session/login source, and
+EC2 Auto Scaling. Simple moving-average or exponential baselines remain replaceable strategies;
+no heavyweight machine-learning runtime is required for v1.
 
 ### 1.1 In scope
 
@@ -39,7 +61,7 @@ The repository remains one modular monolith with separately runnable processes: 
 | FR/NFR ID | Design section | Notes |
 |-----------|----------------|-------|
 | FR-1 | 2, 3, 9.4 | Explicit agent, app, common, DB, load-test, dashboard, infrastructure, test, script, and documentation paths. |
-| FR-2 | 5 | Existing six-table schema is retained and extended through a reversible second migration; a demo-run entity makes result claims reproducible. |
+| FR-2 | 5 | The six-table baseline is retained and extended through reversible revisions `0002`–`0004`; run, retry, capacity-evidence, and tier-outbox records make decisions reproducible. |
 | FR-3 | 2.4, 6 | One shared state machine covers scheduled and real-time detection, protection, recovery, cooldown, and failure-safe behavior. |
 | FR-4 | 3, 4.1 | Existing commerce and observability endpoints remain stable and are regression-tested. |
 | FR-5 | 2.5, 3, 4.4 | Existing tier matrix and persist-before-activation controller are retained and integrated with Pulse. |
@@ -57,7 +79,7 @@ The repository remains one modular monolith with separately runnable processes: 
 | FR-17 | 2.9, 3, 9 | Terraform provides bounded ASG, launch template, metrics/alarm, inputs, outputs, and least-privilege IAM. |
 | FR-18 | 9 | Unit, integration, contract, migration, adapter, and local end-to-end tests cover both modes. |
 | FR-19 | 9.3 | GitHub Actions verifies Python, PostgreSQL migrations, dashboard, Compose, Terraform, coverage, and secrets. |
-| FR-20 | 9.4, 10 | README and supporting docs replace slice wording with complete setup, diagrams, demos, results, troubleshooting, and cleanup. |
+| FR-20 | 9.4, 10 | README and supporting docs provide complete setup, diagrams, demos, results, troubleshooting, and cleanup guidance. |
 | FR-21 | 2.6, 4.13–4.14, 5 | Critical-path p99/success, lead time, and provisioning efficiency are mandatory; error/recovery/cost duration are optional measured outputs. |
 | FR-22 | 9.5 | Implementation is committed/pushed on the artifact-slug branch based on `codex/demo-app-foundation`; PR remains open. |
 | NFR-1 | 2.5, 3, 5, 9 | Dry-run defaults and ceiling enforcement exist at configuration, service, adapter, test, Compose, and documentation layers. |
@@ -76,7 +98,7 @@ The repository remains one modular monolith with separately runnable processes: 
 | NFR-14 | 2.2–2.7, 4, 5 | All intervals/windows/thresholds/ratios are configured and all histories are bounded. |
 | NFR-15 | 2.6, 4.13–4.16, 5, 9 | Demo-run records preserve scenario, thresholds, mode, baseline definition, formulas, timestamps, and generated summaries. |
 
-## 1b. Scope options (user selects at SDD approval)
+## 1b. Approved scope decision (design history)
 
 **Scope (choose one — default: Option 1):**
 
@@ -96,26 +118,39 @@ The repository remains one modular monolith with separately runnable processes: 
 
 Pulse uses one repository and shared database but separates runtime responsibilities. The protected demo app owns request behavior, in-process rolling metrics, and the authoritative shedding controller. The agent owns collection, detection, scheduling, forecasting, response decisions, AWS integration, recovery, feedback evaluation, and read-only operator APIs. Both use shared typed contracts and repositories but do not import each other's business services. The agent changes application protection only through the authenticated internal HTTP API, preserving the application's persist-before-activate invariant.
 
-The worker runs as a single active process per environment in v1. Within it, independent bounded loops collect/evaluate real-time signals, claim scheduled ramp points, evaluate recovery, and close completed predictions/runs. A common injected clock makes timed decisions deterministic in tests. A PostgreSQL unique idempotency key on scaling actions and transactional claims protect repeated polling. Runtime configuration validates safety bounds at startup, and every mutation path delegates to the same response pipeline and one capacity adapter.
+The agent runs as a single active process per environment in v1. Its real-time, scheduled, feedback,
+and maintenance workers run as independent bounded tasks; maintenance performs shared recovery,
+provider reconciliation, tier-outbox resumption, bounded retries, and retention. A separately managed
+dependency supervisor recreates failed database/client generations. A common injected clock makes
+timed decisions deterministic in tests. PostgreSQL unique idempotency keys, transactional claims,
+and the serialized priority arbiter protect repeated polling and cross-mode races. Runtime
+configuration validates safety bounds at startup, and every mutation path delegates to the same
+response pipeline and one capacity adapter.
 
 ```mermaid
 flowchart LR
   L["Locust scheduled/sudden scenarios"] -->|commerce traffic| D["Protected FastAPI demo app"]
   L -->|authenticated simulated signals/run metadata| A["Pulse agent API + workers"]
   D -->|bounded metrics snapshot| C["Composite signal collector"]
-  CW["CloudWatch / CloudFront / SQS optional providers"] --> C
+  CW["Workload-region CloudWatch CPU / SQS"] --> C
+  CF["us-east-1 CloudFront metrics"] --> C
+  HS["Optional HTTP session/login source"] --> C
   C --> R["Real-time detector"]
   PG[("PostgreSQL 16")]
   PG --> S["Scheduled event detector + ramp planner"]
-  R --> U["Unified prediction/response pipeline"]
-  S --> U
-  U -->|persist command/outcome| PG
+  R --> P["Persist prediction + immutable command"]
+  S --> P
+  P --> U["Cross-mode priority arbiter + response pipeline"]
+  U -->|atomic action + tier outbox| PG
   U -->|token-authenticated tier transition| D
-  U --> G["Single dry-run-aware Auto Scaling adapter"]
+  U --> G["Single intent-aware Auto Scaling adapter"]
   G -->|live opt-in only| ASG["AWS EC2 Auto Scaling Group"]
   F["Feedback/results evaluator"] --> PG
   C --> PG
   PG --> F
+  M["Maintenance: reconcile / retry / resume / retention"] --> U
+  M --> PG
+  DS["Dependency supervisor + worker task health"] --> M
   UI["Next.js operator dashboard"] -->|bounded read-only polling| A
   A --> PG
   TF["Terraform"] -. provisions .-> ASG
@@ -124,9 +159,22 @@ flowchart LR
 
 ### 2.2 Signal collection and persistence
 
-`SignalProvider` is a typed async protocol returning `SignalReading(value, observed_at, freshness, status, details)`. Implementations cover the demo app snapshot over `httpx`, CloudWatch origin/CPU metrics, CloudFront request rate through CloudWatch, SQS depth/growth, and an in-memory bounded simulated-signal provider populated through an authenticated internal API. The collector treats origin metrics as required for real-time evaluation and all leading providers as optional. Timeouts, stale readings, and unavailable providers reduce confidence and appear in `signal_details`; they do not stop the worker (FR-6, R-4).
+`SignalProvider` is a typed async protocol returning
+`SignalReading(source, observed_at, status, values, freshness_seconds, details)`. The assembled
+runtime always includes the demo-app snapshot over `httpx` and the bounded simulated provider.
+Explicit live mode may add CloudWatch ASG CPU in the configured workload region, CloudFront request
+rate through a separate `us-east-1` CloudWatch client, and SQS depth/growth in the workload region;
+an HTTP session/login provider is independently optional. SDK clients have bounded connect/read
+timeouts and attempts. The collector treats origin metrics as required and leading providers as
+optional. Omitted, stale, timed-out, and unavailable sources reduce confidence and remain visible
+in `signal_details`; they do not invent values or stop the worker (FR-6, R-4).
 
-The collector keeps only enough in-memory samples for the configured window and persists every evaluated aggregate as `traffic_snapshots`. Endpoint metrics include checkout p99 and success rate. PostgreSQL history supplies restart continuity and dashboard data. Collection uses a short timeout and no protected request performs database or external-provider I/O (NFR-5, NFR-14).
+The collector keeps only enough in-memory samples for the configured window and persists every
+evaluated aggregate as `traffic_snapshots`. Endpoint metrics include checkout p99 and success
+rate. Each production snapshot also stores authoritative ASG desired/in-service capacity and the
+effective RPS-per-instance assumption used by results evaluation. PostgreSQL history supplies
+restart continuity and dashboard data. Collection uses a short timeout and no protected request
+performs database or external-provider I/O (NFR-5, NFR-14).
 
 ### 2.3 Detection and forecasting
 
@@ -152,7 +200,7 @@ Both detectors emit a `SurgePredictionCandidate`; `PredictionService` persists i
 command_id / idempotency_key
 correlation_id and optional demo_run_id
 prediction_id, trigger_snapshot_id, scheduled_event_id
-mode and target_resource
+mode, response intent (detector / prewarm / protect / recover / hold), and target_resource
 requested_desired_capacity and maximum_ceiling
 optional requested_shedding_level
 reason_code, reasoning, signal_evidence
@@ -162,29 +210,54 @@ recovery_plan {low_threshold, confirmation_count, cooldown_seconds, decrement_st
 | State | Entry | Permitted actions | Exit |
 |-------|-------|-------------------|------|
 | `NORMAL` | Startup or completed cooldown | Collect/persist; no protection mutation | Confirmed real-time evidence → `WATCH`; scheduled horizon → `PREWARM`; persistence/provider fault → `FAILURE_SAFE` |
-| `WATCH` | First qualifying real-time evidence | Persist prediction candidate; wait for confirmations | Confirmed confidence → `PROTECT`; evidence falls below exit threshold → `NORMAL` |
+| `WATCH` | First qualifying real-time evidence | Persist snapshots; wait for confirmations | Confirmed confidence → `PROTECT`; scheduled horizon → `PREWARM`; evidence falls below exit threshold → `NORMAL` |
 | `PREWARM` | A scheduled ramp horizon opens | Claim/execute due capacity points; optionally tier 1 immediately before event | Event/surge threshold → `PROTECT`; cancelled event with low load → `RECOVERY` |
 | `PROTECT` | Confirmed surge or event peak window | Scale out up to ceiling; set tier appropriate to pressure | Sustained low evidence after event/peak → `RECOVERY`; fault → `FAILURE_SAFE` |
-| `RECOVERY` | Low-load confirmation count met | Lower tier one step and capacity by bounded decrement | Remaining protection/capacity → `COOLDOWN`; floor and tier 0 → `NORMAL` |
-| `COOLDOWN` | Any scale/tier reduction | Continue observing/auditing; reject reverse or repeated reductions except emergency scale-out | Timer expires → prior target state; renewed high evidence → `PROTECT` |
-| `FAILURE_SAFE` | DB unavailable, invalid config, app control failure, or provider failure | No unaudited AWS/tier mutation; preserve current tier; report degraded health; bounded retry | Dependencies recover → reconcile then `WATCH`/`PROTECT`/`RECOVERY` based on evidence |
+| `RECOVERY` | Low-load confirmation count met | Lower tier one step and capacity by bounded decrement | Scheduled horizon → `PREWARM`; remaining protection/capacity → `COOLDOWN`; floor and tier 0 → `NORMAL` |
+| `COOLDOWN` | Any scale/tier reduction | Continue observing/auditing; reject repeated reductions; protection may interrupt | Scheduled horizon → `PREWARM`; timer expires → `RECOVERY`; renewed high evidence → `PROTECT` |
+| `FAILURE_SAFE` | DB unavailable, invalid config, app control failure, or provider failure | No unaudited AWS/tier mutation; preserve durable intent/current tier; report health 503; bounded retry | Supervisor/maintenance reconcile dependencies then select `WATCH`, `PROTECT`, or `RECOVERY` from authoritative evidence |
 
 ### 2.5 Response safety and ordering
 
 For each command, `ResponsePipeline` performs the following order (FR-8, FR-9, NFR-1, NFR-4):
 
-1. Validate UTC timestamps, target, requested capacity, recovery plan, and tier; derive the effective ceiling as `min(global_ceiling, event_override when present)`.
-2. Clamp requested capacity before calling any adapter. Construct a stable idempotency key and transactionally insert the planned scaling action. A unique-key conflict returns the existing result without a provider call.
-3. In dry-run, read simulated/current capacity if available, record `dry_run`, `noop`, or `capped`, and never call `set_desired_capacity`.
-4. In live mode, call only the injected `AutoScalingCapacityAdapter`. The adapter checks the ceiling again, calls `DescribeAutoScalingGroups` and then `SetDesiredCapacity`, and returns the provider request ID/error. The pre-existing planned row is updated to `succeeded`, `failed`, `capped`, or `skipped`; a reconciliation worker resolves a rare post-provider DB update failure from the planned record and provider state.
-5. Apply any tier change through the demo app's token-authenticated endpoint. The demo app commits the new interval before switching its in-memory policy. A failure leaves the previous policy active and is reported on status; emergency protection can be retried with the same correlation.
-6. Store cooldown/recovery state. Scale-out may interrupt recovery when new high evidence appears; scale-in and tier reductions cannot bypass the low-evidence and cooldown guards.
+1. Enter a serialized priority arbiter (`PROTECT`/`PREWARM`/detector before `HOLD`, with `RECOVER`
+   lowest), validate UTC/target/tier/recovery fields, and re-read authoritative capacity and tier.
+   Merge the maximum requirement for each active mode/event. Reject stale recovery and every
+   non-recovery decrease before claim or mutation.
+2. Derive `min(global_ceiling, command/event ceiling)`, clamp the request, and transactionally claim
+   the stable idempotency key. Revision 0004 stores the complete serialized command, requested tier,
+   and pending tier stage on that same planned action before any external work. A duplicate returns
+   the existing capacity result and resumes only an incomplete tier stage.
+3. In dry-run, use simulated/current capacity, record `dry_run`, `noop`, or `capped`, and never
+   construct or invoke a boto3 client.
+4. In live mode, call only `AutoScalingCapacityAdapter`. It rechecks target and ceiling, reads the
+   ASG, and calls `SetDesiredCapacity` once. Scale-out (`DETECTOR`, `PREWARM`, or `PROTECT`) uses
+   `HonorCooldown=False`; only a validated `RECOVER` decrease uses `HonorCooldown=True`.
+   Ambiguous provider errors become `unknown`, and maintenance reconciles them by read-only
+   capacity observation before any later scale-in.
+5. Persist the capacity outcome, then deliver the pending tier through the demo app's authenticated
+   endpoint. The demo app commits the interval before activating policy. Success completes the
+   outbox; failure leaves the prior policy active and the tier stage pending with bounded attempts.
+   A bounded `response_retries` row supplies backoff when available, but the action outbox itself is
+   sufficient for restart continuation with the original correlation and without another capacity
+   mutation.
+6. Record state/cooldown. One shared recovery coordinator deduplicates sustained-low evidence by
+   persisted snapshot ID across realtime and maintenance callers. Renewed protection supersedes
+   recovery immediately; only recovery can decrease capacity or tier.
 
 Checkout is structurally excluded from the policy matrix and from the token bucket. The response pipeline can request only an enumerated tier, never endpoint-level overrides (NFR-2).
 
 ### 2.6 Feedback loop and result formulas
 
-`FeedbackEvaluator` closes a prediction after its configured horizon and closes a demo run when the load wrapper reports completion. It joins typed prediction points and traffic snapshots by `demo_run_id`, environment, and time range. It stores raw parameters plus the calculated summary; an API response always discloses the observation interval, scenario, execution mode, threshold snapshot, and formula version.
+`FeedbackEvaluator` closes a prediction after its configured horizon and closes a demo run after
+the load wrapper reports completion. It joins typed prediction points, traffic snapshots, scaling
+actions, and tier intervals by `demo_run_id`, environment, and time range. Run creation replaces
+caller-asserted control settings with a sanitized server-effective `settings_snapshot_version=v1`
+record containing pair identity, workload seed/duration/host/weights, thresholds, execution mode,
+target, provider configuration, ceilings, and RPS-per-instance. Result calculation requires the
+persisted capacity evidence; absent inputs remain unavailable with warnings. API responses disclose
+the observation interval, scenario, execution mode, formulas, settings, and record references.
 
 Mandatory metrics (FR-12, FR-21):
 
@@ -199,17 +272,46 @@ No percentage improvement is committed in documentation unless both compared run
 
 ### 2.7 Dashboard
 
-The dashboard is a small Next.js/React application using a lightweight chart library and browser polling. A single configurable refresh interval (default 2 seconds, minimum 1 second) fetches `/status` and time-bounded history in parallel, cancels stale requests, and retains only the visible window. Views include current detector/state/provider health; traffic and checkout p99; actual versus predicted RPS; desired/in-service/pending capacity; tier and endpoint policy; scheduled-event/ramp state; recent actions with evidence/reasoning; and run results. The browser receives no control token and exposes no mutation UI (FR-14, R-8).
+The dashboard is a small Next.js/React application with browser polling and a lightweight SVG line
+chart. A single configurable refresh interval (default 2 seconds, minimum 1 second) fetches status
+and time-bounded history in parallel, cancels stale requests, and retains only the selected
+15-minute, 1-hour, or 6-hour window. Snapshot history, status `latest_snapshot`, and prediction
+`actual_snapshots` use `DashboardSnapshotV1`/`DashboardSnapshotPageV1` with
+`schema_version="pulse.snapshot.v1"`. The DTO exposes explicit ASG desired/in-service fields and
+derives `pending_capacity=max(desired-in_service, 0)`; this is outstanding capacity, not an exact
+AWS lifecycle-state count. The browser rejects unsupported rows with a visible warning. Views
+include detector/dependency/provider health; traffic and checkout p99/success; actual versus
+predicted RPS; capacity; tier/policy; schedule; actions; and results. It receives no control token
+and exposes no mutation UI (FR-14, R-8).
 
 ### 2.8 Local deployment
 
-Compose defines `postgres`, one-shot `migrate`, `demo-app`, `agent`, and `dashboard`. PostgreSQL readiness gates migration; successful migration and demo app health gate the agent; agent health gates dashboard startup. Defaults use dry-run and simulated optional providers. Containers have explicit health checks, restart policies for long-running services, bounded logs, and named database storage. Locust remains an on-demand profile or documented host command so `docker compose up --build` starts a usable platform without immediately generating traffic (FR-16, NFR-12).
+Compose defines `postgres`, one-shot `migrate`, `demo-app`, `agent`, and `dashboard`, plus a
+profile-only `locust` service. PostgreSQL readiness gates migration; successful migration gates the
+demo app and agent, demo-app health also gates the agent, and agent health gates the dashboard.
+The agent starts realtime, scheduled, feedback, and maintenance workers plus an independent
+database supervisor. Initial or runtime database failure returns health 503 while tasks remain
+alive and retry on bounded polls; readiness returns to 200 in-process after recovery. Defaults use
+dry-run and only demo/simulated providers. Containers have explicit health checks, non-root app
+images, restart policies, bounded JSON logs, and a Compose-project-scoped database volume. Locust
+does not start with the normal stack (FR-16, NFR-12).
 
 ### 2.9 AWS deployment boundary
 
-Terraform provides a launch template with IMDSv2, configurable AMI/instance type/user data, an ASG with desired/minimum one and a conservative configurable maximum, supplied VPC/subnet/security-group inputs, a `Pulse/Traffic` custom metric namespace/alarm representing the reactive comparator, and a Pulse IAM policy/role. An optional load-balancer module may be enabled for a live demo but remains off in the lowest-cost defaults. Outputs include ASG name/ARN, alarm name, role/policy ARN, and any enabled endpoint. CI runs format/init/validate only and never applies.
+Terraform provides a launch template with IMDSv2, encrypted storage, configurable AMI/instance
+type/user data, an ASG with desired/minimum one and conservative maximum three (validated hard
+maximum five), supplied VPC/subnet/security-group inputs, a `Pulse/Traffic` custom metric/alarm
+representing the reactive comparator, and a Pulse IAM policy/role. It is a bounded ASG/control
+target; the default user data does not deploy PostgreSQL, the applications, ingress, or DNS.
+Outputs include ASG name/ARN, alarm name, role/policy ARN, and capacity bounds. CI runs
+format/init-without-backend/validate and policy assertions only; it never plans or applies.
 
-IAM permits only required reads/publishing and `autoscaling:SetDesiredCapacity` scoped to the configured ASG ARN; APIs such as `DescribeAutoScalingGroups` and CloudWatch reads that do not support resource scoping use `Resource: *` with documented conditions where supported. SQS queue reads are scoped to an optional queue ARN. The runtime cannot create, delete, or reconfigure arbitrary AWS resources (FR-17, NFR-8, R-9).
+IAM permits only required reads/publishing and `autoscaling:SetDesiredCapacity` scoped to the
+configured ASG ARN; APIs such as `DescribeAutoScalingGroups` and CloudWatch reads that do not
+support resource scoping use `Resource: *` with documented conditions where supported. Optional
+SQS reads are scoped to one queue. Live providers use bounded boto3 configuration, workload-region
+CPU/SQS clients, and a separate `us-east-1` CloudWatch client for global CloudFront metrics. The
+runtime cannot create, delete, or reconfigure arbitrary AWS resources (FR-17, NFR-8, R-9).
 
 ### 2.10 Security and secret handling
 
@@ -217,37 +319,56 @@ Internal signal/run and shedding mutation routes use `X-Pulse-Control-Token` and
 
 ## 3. Components
 
-| Component | Responsibility | Repo | New/Modified | FR/NFR |
-|-----------|----------------|------|--------------|--------|
-| `common.contracts` / enums | Typed signal, prediction, response, recovery, status, and policy contracts without service imports | `Suryavarma333/pulse-engine` | Create/modify | FR-1, FR-8, NFR-9 |
-| `demo_app.app.metrics` | Bounded rolling aggregate and endpoint-specific request metrics with no blocking external I/O | Same | Modify | FR-4, FR-6, FR-21, NFR-5 |
-| Protected routes/policy/limiter | Preserve commerce behavior and enforce immutable checkout protection across tiers | Same | Modify only as integration requires | FR-4, FR-5, NFR-2 |
-| Demo operations router/controller/store | Health/snapshot contracts and authenticated persist-before-activate transitions | Same | Modify | FR-5, FR-6, NFR-4, NFR-7 |
-| `db.models` and repositories | Async CRUD, bounded history, transaction claims, and audit/evaluation persistence | Same | Create/modify | FR-2, FR-8, FR-10, FR-12, NFR-13 |
-| `agent.app.config` | Validate windows, thresholds, URLs, token, dry-run, target, ceilings, cooldown, and provider configuration | Same | Create | FR-7–FR-11, NFR-1, NFR-14 |
-| Composite metric providers | Demo, simulated, CloudWatch/CloudFront, SQS, and session/login signal collection with freshness/health | Same | Create | FR-6, NFR-6, NFR-12 |
-| Real-time detector | Baseline/delta/acceleration/confidence, confirmation/hysteresis, comparator timestamp | Same | Create | FR-7, NFR-3, NFR-6 |
-| Scheduled detector/ramp planner | Timezone-aware due-event polling, monotonic ramp calculation, exact-once point keys | Same | Create | FR-10, NFR-3 |
-| Prediction/forecast service | Persist prediction/points and create shared command independent of detector mode | Same | Create | FR-3, FR-8, NFR-4 |
-| Response state machine/pipeline | Validate, claim idempotency, coordinate capacity, tier, cooldown, and failure-safe state | Same | Create | FR-3, FR-8, FR-11, NFR-1–NFR-4 |
-| Auto Scaling adapter | Dry-run simulation, live boto3 reads/mutation, second ceiling check, provider metadata | Same | Create | FR-9, NFR-1, NFR-8 |
-| Shedding HTTP client | Token-authenticated calls, timeout, retry classification, and status reconciliation | Same | Create | FR-5, FR-8, NFR-7 |
-| Feedback/results evaluator | Close predictions/runs and calculate traceable portfolio metrics | Same | Create | FR-12, FR-21, NFR-15 |
-| Agent API and worker lifespan | Start bounded loops; expose health, status, history, internal simulation, and run lifecycle | Same | Create | FR-6, FR-10, FR-15, NFR-11 |
-| Locust scenarios/wrappers | Scheduled Diwali and unexpected spike workloads, run registration, evidence export, reset | Same | Create | FR-13, FR-21, NFR-15 |
-| Next.js dashboard | Live read-only operational and predicted-versus-actual views | Same | Create | FR-14, NFR-5, NFR-14 |
-| Docker/Compose images | Reproducible dependency-safe local stack and on-demand load profile | Same | Create/modify | FR-16, NFR-12 |
-| Terraform modules/root | Low-cost launch template, bounded ASG, metric/alarm, IAM, variables/outputs | Same | Create | FR-17, NFR-1, NFR-8 |
-| GitHub Actions | Backend, migration, frontend, Compose, Terraform, coverage, and secret checks | Same | Create | FR-19, NFR-7, NFR-10 |
-| Docs/scripts | Seed/reset, exact demos, architecture/state diagrams, IAM/AWS setup, results formulas | Same | Create/modify | FR-20–FR-22, NFR-15 |
+| Component | As-built responsibility | Status | FR/NFR |
+|-----------|-------------------------|--------|--------|
+| `common.contracts` / enums | Frozen signal, prediction, response-intent, recovery, capacity, worker, run/result, query, and `pulse.snapshot.v1` DTO contracts | Implemented | FR-1, FR-8, FR-14, NFR-9 |
+| Protected commerce routes/policy/limiter | Stable checkout/catalog/recommendation behavior; checkout structurally bypasses every non-critical policy | Preserved and verified | FR-4, FR-5, NFR-2 |
+| Demo metrics and operations | Bounded fixed-cardinality request metrics, typed readiness/snapshot responses, constant-time authenticated persist-before-activate tier transitions | Implemented | FR-5, FR-6, NFR-4, NFR-7 |
+| Models, revisions `0001`–`0004`, and repositories | Async bounded CRUD, run attribution, predictions, exact-once claims, atomic tier outbox, response retries, capacity assumptions, retention, and operator reads | Implemented | FR-2, FR-8, FR-10, FR-12, NFR-13 |
+| `agent.app.config` and `AgentRuntime` | Validate every safety/window/provider/retry/retention setting and own clock, simulated buffer, and managed clients | Implemented | FR-7–FR-11, NFR-1, NFR-14 |
+| Composite providers/collector | Required demo origin plus simulated and optional regional AWS/HTTP signals; freshness/timeout health; capacity-backed snapshots | Implemented | FR-6, NFR-6, NFR-12 |
+| Real-time detector, worker, and lifecycle | Baseline/change/acceleration/confidence/hysteresis, run isolation, comparator persistence, WATCH/protection/recovery integration, and DB-outage-safe bounded polling | Implemented | FR-7, FR-11, NFR-3, NFR-6 |
+| Scheduled worker and ramp planner | Timezone/DST validation, monotonic bounded ramps, latest-safe restart catch-up, exact-once keys, near-event protection, and shared recovery | Implemented | FR-10, FR-11, NFR-3 |
+| Prediction service | Atomically persist prediction/points and produce the shared immutable command for either mode | Implemented | FR-3, FR-8, NFR-4 |
+| Priority arbiter, state machine, response pipeline | Serialize all intents, refresh authoritative state, merge active requirements, double-clamp, claim action+tier outbox, and block unsafe decreases | Implemented | FR-3, FR-8, FR-11, NFR-1–NFR-4 |
+| Recovery, maintenance, reconciliation, and dependency supervisor | Deduplicate low evidence, apply bounded recovery, reconcile unknown outcomes, resume tier outbox/retries, prune snapshots, and publish recoverable readiness | Implemented | FR-8, FR-11, NFR-3, NFR-11, NFR-14 |
+| Auto Scaling adapter | Credential-free dry-run plus one bounded live boto3 read/mutation path with intent-aware `HonorCooldown` and sanitized ambiguity | Implemented | FR-9, NFR-1, NFR-8 |
+| Shedding HTTP client | Server-side token-authenticated status/transition calls with timeouts, sanitized errors, and retry classification | Implemented | FR-5, FR-8, NFR-7 |
+| Feedback service/worker | Close persisted runs and predictions with formula-v1 metrics, effective settings, evidence references, and explicit warnings | Implemented | FR-12, FR-21, NFR-15 |
+| Agent API/lifespan | Dynamic `/health`, bounded `/api/v1` reads, strict authenticated writes, CORS, worker task inspection, and graceful ownership | Implemented | FR-6, FR-10, FR-15, NFR-11 |
+| Locust scenarios/wrappers/scripts | Scheduled Diwali and sudden spike, equal-input pairing, server-attributed run lifecycle, reset, verification, and export | Implemented | FR-13, FR-21, NFR-15 |
+| Next.js dashboard | Read-only polling UI with versioned snapshot validation, partial-failure handling, and operations/results views | Implemented | FR-14, NFR-5, NFR-14 |
+| Docker/Compose images | Health-gated credential-free stack with non-root app images, bounded logs, project-scoped storage, and profile-only load driver | Implemented | FR-16, NFR-12 |
+| Terraform | Low-cost existing-network launch template/ASG, comparator alarm, scoped runtime IAM, variables, outputs, and manual apply/destroy boundary | Implemented; not applied | FR-17, NFR-1, NFR-8 |
+| GitHub Actions | Six jobs for Python/PostgreSQL/dashboard/Compose+Locust/Terraform/secrets and diff hygiene | Implemented and green | FR-19, NFR-7, NFR-10 |
+| README/shared docs/history | Architecture/state/runbook/results guidance, rollout/rollback, traceability, and business-readable delivery history | Implemented | FR-20–FR-22, NFR-15 |
 
 ## 4. APIs
 
-All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, to}`; `from` and `to` are required or default to a configured bounded window, `limit` defaults to 200 and is capped at 1,000. UUIDs are canonical strings. Error bodies use `{detail, code, correlation_id?}`. The 16 endpoints marked **new** or **changed** below comprise the handoff API count.
+All timestamps use RFC 3339 UTC. Bounded list responses use
+`{items, next_cursor, from, to}`; omitted `from`/`to` resolve to the configured default window,
+`limit` defaults to at most 200 and is capped by `query_max_rows` (maximum 1,000), and cursors are
+opaque/capped. UUIDs are canonical strings. Agent errors use `{detail, code, errors?}`; demo-control
+errors may also include `correlation_id`. Pydantic request DTOs forbid unknown fields except the
+preserved `CheckoutRequest`, which intentionally ignores additive client metadata for backward
+compatibility. The 16 endpoints marked **new** or **changed** below comprise the handoff API count.
+
+### 4.0 Final shared DTOs
+
+| DTO | Fields / invariant | Consumers |
+|-----|--------------------|-----------|
+| `SignalReading` | `source`, UTC `observed_at`, provider `status`, up to 32 numeric `values`, non-negative `freshness_seconds`, bounded/sensitive-key-rejecting `details` | composite collector and all providers |
+| `ResponseCommand` | stable key/correlation/run/prediction/snapshot/event references; mode plus `intent`; target/request/ceiling/tier; bounded reason/evidence; recovery plan | realtime/scheduled/recovery, priority arbiter, outbox, retries, adapter |
+| `DashboardSnapshotV1` | literal `schema_version="pulse.snapshot.v1"`; traffic/baseline/change/acceleration/optional signals; latency/checkout/error; explicit `asg_desired_capacity`, `asg_in_service_capacity`, derived non-negative `pending_capacity`; positive `capacity_per_instance_rps`; tier/comparator/evidence | `/api/v1/snapshots`, status `latest_snapshot`, prediction `actual_snapshots`, dashboard |
+| `DashboardSnapshotPageV1` | tuple of v1 snapshots plus bounded cursor and UTC `from`/`to` | dashboard traffic/capacity history |
+| `CapacityState` / `CapacityDecision` | non-negative desired/in-service/pending observation; requested/applied/ceiling/mode/status/request ID/sanitized error with `applied <= ceiling` | status, pipeline, adapter, audit |
+| `DemoRunSpec` / `ResultMetrics` | idempotent scenario/run identity and server-effective settings; formula-v1 checkout, lead, provisioning, prediction, over/under, error, recovery, cost, warnings | internal run API, feedback, results, export |
+| Demo-app DTOs | `CheckoutRequest`, strict `SheddingTransitionRequest`, `SheddingStateResponse`, `TrafficSnapshotResponse`, `ApplicationHealthResponse` | protected and operational demo routes |
 
 ### 4.1 Preserved commerce contracts (unchanged; not counted)
 
-- `POST /checkout`: unauthenticated; validates `{cart_id, item_count}`; always returns normal endpoint mode and never 429 due to Pulse.
+- `POST /checkout`: unauthenticated; validates `{cart_id, item_count}` while ignoring additive
+  unknown request fields; always returns normal endpoint mode and never 429 due to Pulse.
 - `GET /recommendations`: unauthenticated; normal, disabled/minimal, or emergency-rate-limited according to the tier.
 - `GET /catalog`: unauthenticated; normal, stale-cached, or emergency-rate-limited according to the tier.
 - Validation returns HTTP 422. These contracts receive regression/e2e coverage but no incompatible schema change.
@@ -258,7 +379,9 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Auth:** none locally; network-restricted in AWS.
 - **Request:** none.
 - **Response:** `200` with service/environment, readiness, DB persistence status, tier/event/reason, endpoint policy, bounded metric summary, and `critical_path_protected: true`; `503` when the database-backed controller cannot be initialized.
-- **Errors:** HTTP 503 `DEPENDENCY_UNAVAILABLE`; no secrets or control token are returned.
+- **Errors/readiness:** the same typed body is returned with HTTP 503 and `status=degraded` when
+  persistence is unavailable or the authoritative state was not loaded; no token or internal
+  exception text is returned.
 - **Idempotency / rate limit:** safe read; excluded from traffic metrics and bounded by deployment-level limits.
 
 ### 4.3 Demo application traffic snapshot — changed
@@ -267,7 +390,8 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Auth:** none on the internal Compose network; network-restricted in AWS.
 - **Request:** optional `run_id` is not accepted from the public caller; current run association comes from agent collection context.
 - **Response:** observed/window timestamps, origin RPS, request count, concurrent requests, aggregate percentiles/error rate, per-endpoint counts/p99/success, current tier/policy.
-- **Errors:** HTTP 500 `METRIC_SNAPSHOT_FAILED` only for internal invariant failure.
+- **Errors:** validation is response-model enforced; an unexpected internal invariant failure is
+  sanitized by the server as HTTP 500.
 - **Idempotency / rate limit:** safe read; response work is O(samples in configured bounded window).
 
 ### 4.4 Demo application tier control — changed
@@ -284,7 +408,13 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Method / Path:** `GET /health`
 - **Auth:** none locally; network-restricted in AWS.
 - **Request:** none.
-- **Response:** `200` when process is live; `status` is `ok` or `degraded`, and dependency fields summarize PostgreSQL, demo app, collectors, and worker heartbeat. `503` is returned only when mandatory DB initialization/worker startup is unavailable.
+- **Response:** `{service, environment, status, ready, database:{ready}, demo_app:{ready}, workers[]}`.
+  `workers` includes realtime, scheduled, feedback, maintenance, and the database dependency
+  supervisor with `name/status/checked_at/detail`. Actual task completion is inspected, not only
+  the last heartbeat.
+- **Errors/readiness:** HTTP 503 while the database is unavailable, a mandatory worker task is
+  stopped/failed, or a mandatory worker/supervisor reports degraded/unavailable. Those conditions
+  are readiness failures; the same tasks can remain live and return to 200 after recovery.
 - **Errors:** HTTP 503 `NOT_READY`.
 - **Idempotency / rate limit:** safe constant/bounded read; suitable for Compose health checks.
 
@@ -293,8 +423,13 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Method / Path:** `GET /api/v1/status`
 - **Auth:** none locally; configured CORS/network restriction.
 - **Request:** optional `environment`.
-- **Response:** execution mode, global/event ceiling, state machine state, latest evaluated snapshot/prediction, current/desired/in-service/pending capacity, tier/policy, cooldown/recovery progress, scheduled next point, provider freshness/health, worker heartbeats, and DB/demo readiness.
-- **Errors:** 422 invalid environment; 503 mandatory dependency unavailable. Partial optional provider failures remain `200` with explicit status.
+- **Response:** execution mode/global ceiling/state, `database_ready`, `demo_app_ready`, a bounded
+  live capacity read or `capacity_error`, tier/policy, cooldown and low-confirmation progress,
+  versioned `latest_snapshot`, latest prediction/action, next scheduled point/event, configured and
+  observed provider health, and actual worker/supervisor status.
+- **Errors:** 422 invalid environment; 500 bounded query failure. Dependency and optional-provider
+  state is returned inside the 200 status payload; readiness enforcement belongs to agent
+  `/health`.
 - **Idempotency / rate limit:** safe read; assembled from bounded latest-row queries and cached provider health.
 
 ### 4.7 Traffic snapshot history — new
@@ -302,7 +437,9 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Method / Path:** `GET /api/v1/snapshots`
 - **Auth:** none locally.
 - **Request:** `environment`, bounded `from`/`to`, `limit`, `cursor`, optional `demo_run_id`.
-- **Response:** typed rates/delta/acceleration, optional signals, checkout/aggregate latency and success, capacity, tier, comparator flag, freshness/evidence summary.
+- **Response:** `DashboardSnapshotPageV1`; every item is exactly `pulse.snapshot.v1` and includes
+  the DTO fields in §4.0. `pending_capacity` is derived from persisted desired minus in-service and
+  is not an AWS lifecycle-state count.
 - **Errors:** 422 invalid/unbounded range or limit; 500 query error.
 - **Idempotency / rate limit:** safe read; `(environment, observed_at)` and run/time indexes; maximum range/rows enforced.
 
@@ -320,7 +457,8 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Method / Path:** `GET /api/v1/predictions/{prediction_id}`
 - **Auth:** none locally.
 - **Request:** UUID path; optional bounded `include_actual_window_seconds` capped by configuration.
-- **Response:** full prediction, evidence, predicted points, associated actions/transitions, and time-aligned actual snapshot series for chart overlay.
+- **Response:** full prediction, evidence, predicted points, associated actions/transitions, and
+  time-aligned `pulse.snapshot.v1` actual snapshots for chart overlay.
 - **Errors:** 404 `PREDICTION_NOT_FOUND`; 422 invalid UUID/window; 500 query error.
 - **Idempotency / rate limit:** safe bounded read.
 
@@ -329,7 +467,10 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Method / Path:** `GET /api/v1/scaling-actions`
 - **Auth:** none locally.
 - **Request:** bounded time range plus optional `status`, `execution_mode`, `correlation_id`, `prediction_id`, `demo_run_id`, `limit`, `cursor`.
-- **Response:** requested/applied/current capacity, ceiling, dry-run/live, status, cooldown, reason/evidence, provider request ID, and sanitized error.
+- **Response:** persisted action columns including requested/applied/previous capacity, ceiling,
+  dry-run/live outcome, cooldown, immutable `response_command`, requested tier and tier-stage
+  status/attempt/error, reason/evidence, provider request ID, reconciliation time, and sanitized
+  error. Command evidence is bounded; no credential material is returned.
 - **Errors:** 422 invalid filter/range; 500 query error.
 - **Idempotency / rate limit:** safe indexed/paginated read.
 
@@ -347,7 +488,9 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Method / Path:** `GET /api/v1/scheduled-events`
 - **Auth:** none locally.
 - **Request:** bounded `from`/`to`, optional `status`, `limit`, `cursor`.
-- **Response:** event identity, UTC start/end plus IANA timezone, multiplier, ramp settings/profile, capacity bounds, confidence/source/status, next due point, and completed point count.
+- **Response:** event identity, UTC start/end plus IANA timezone, multiplier, ramp settings/profile,
+  capacity bounds, confidence, source, status, and audit timestamps. The next aggregate due point
+  is exposed by `/api/v1/status`; completed points are visible as scaling actions.
 - **Errors:** 422 invalid range/filter; 500 query error.
 - **Idempotency / rate limit:** safe indexed/paginated read. Events are created by the seed script in v1.
 
@@ -375,24 +518,33 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 - **Auth:** required `X-Pulse-Control-Token`, constant-time comparison.
 - **Request:** `{observed_at, demo_run_id?, ttl_seconds, edge_request_rate_rps?, queue_depth?, concurrent_sessions?, login_rate_rps?, cpu_utilization_pct?, source}`; at least one signal is required and ranges are validated.
 - **Response:** `202` with accepted fields, expiry, and provider status; values are consumed by the next collector poll and persisted in snapshot evidence.
-- **Errors:** 401 invalid token; 422 invalid timestamp/range/empty signal; 429 bounded-buffer limit; 503 worker unavailable.
+- **Errors:** 401 invalid token; 409 duplicate signal; 422 invalid/expired timestamp, range, or
+  empty signal; 429 bounded-buffer limit; 503 real-time worker unavailable.
 - **Idempotency / rate limit:** idempotency is `(source, observed_at, demo_run_id)` within the TTL; bounded buffer and configured request rate.
 
 ### 4.16 Demo-run start — new
 
 - **Method / Path:** `POST /internal/demo-runs`
 - **Auth:** required `X-Pulse-Control-Token`.
-- **Request:** `{scenario_name, mode, environment, baseline_type, execution_mode, configuration, thresholds, started_at?, idempotency_key}`.
-- **Response:** `201` new or `200` existing `{id, status, started_at}`.
+- **Request:** strict `{scenario_name, mode, environment, baseline_type, execution_mode,
+  configuration, thresholds, pair_group_id?, started_at?, idempotency_key}`. Caller settings are
+  inputs, not authority: the server whitelists workload seed/duration/host/weights and records its
+  own effective execution mode, thresholds, target, ceiling, RPS-per-instance, provider regions,
+  and control settings under `settings_snapshot_version=v1`.
+- **Response:** `201` new or `200` existing run identity, scenario/mode/environment/baseline,
+  server execution mode, status/times, formula version, warnings, and current results.
 - **Errors:** 401 invalid token; 409 conflicting idempotency payload; 422 invalid configuration; 503 persistence unavailable.
-- **Idempotency / rate limit:** unique client idempotency key; only one active run per environment/scenario runner unless `allow_parallel` is explicitly enabled for tests.
+- **Idempotency / rate limit:** unique client idempotency key and one active run per environment,
+  enforced by the database; retries with the same logical payload return the existing run.
 
 ### 4.17 Demo-run completion — new
 
 - **Method / Path:** `PATCH /internal/demo-runs/{run_id}`
 - **Auth:** required `X-Pulse-Control-Token`.
 - **Request:** `{status: completed|failed|cancelled, ended_at, locust_summary, notes?}`; generated raw files are referenced by safe relative name only, never uploaded secrets.
-- **Response:** `200` closed run with calculated metrics or explicit `pending_evaluation` until the feedback horizon ends.
+- **Response:** `200` terminal or `pending_evaluation` run. A completed payload is evaluated
+  immediately only when the configured feedback horizon has already elapsed; otherwise the
+  feedback worker closes it later. Identical terminal payloads are idempotent.
 - **Errors:** 401 invalid token; 404 run missing; 409 already closed/conflicting completion; 422 invalid time/status; 503 persistence/evaluation unavailable.
 - **Idempotency / rate limit:** repeat of the same terminal payload returns the existing result; conflicting terminal state returns 409.
 
@@ -400,36 +552,66 @@ All timestamps use RFC 3339 UTC. List responses use `{items, next_cursor, from, 
 
 ### 5.1 Entities
 
-| Entity | Store | New/Modified | Key fields | Indexes / integrity | FR |
-|--------|-------|--------------|------------|---------------------|----|
-| `traffic_snapshots` | PostgreSQL | Modified | Existing signals/capacity/tier plus `demo_run_id`, `request_count`, `concurrent_requests`, `request_rate_change_rps`, `checkout_p99_latency_ms`, `checkout_success_rate`, `reactive_comparator_crossed` | Existing unique environment/time; `(demo_run_id, observed_at)`; value/range checks | FR-2, FR-6, FR-7, FR-12, FR-21 |
-| `scheduled_events` | PostgreSQL | Retained/validated | UTC start/end, IANA timezone, multiplier, lead times, ramp profile, minimum/peak/event ceiling, status | `(status, starts_at)`; time/capacity/ceiling checks | FR-2, FR-10 |
-| `surge_predictions` | PostgreSQL | Modified | Existing forecast/evaluation fields plus `demo_run_id`, `environment`, `correlation_id`, `reactive_comparator_crossed_at`, `formula_version` | mode/status/time and `(demo_run_id, created_at)`; confidence/rate checks | FR-2, FR-7, FR-8, FR-12 |
-| `surge_prediction_points` | PostgreSQL | Retained | prediction/time, predicted RPS/capacity | composite PK `(prediction_id, point_at)` | FR-2, FR-14 |
-| `scaling_actions` | PostgreSQL | Modified | Existing correlation/idempotency/capacity/ceiling/status/provider fields plus `demo_run_id` and `reconciled_at` | unique idempotency key; correlation/time/run indexes; applied ≤ ceiling | FR-2, FR-8, FR-9, FR-11 |
-| `load_shedding_events` | PostgreSQL | Modified | Existing interval/policy/audit fields plus `demo_run_id` | one open interval/environment; time/run/correlation indexes | FR-2, FR-5, FR-11 |
-| `demo_runs` | PostgreSQL | New | UUID, unique idempotency key, scenario/mode/environment/baseline/execution mode, configuration/threshold JSONB, start/end/status, comparator time, typed checkout/lead/provisioning/error/recovery/cost metrics, formula version, summary JSONB | `(environment, started_at)`, `(scenario_name, status)`; valid time/rates/status; partial active-run constraint | FR-12, FR-13, FR-21, NFR-15 |
+| Entity | As-built change | Key fields / role | Integrity / access |
+|--------|-----------------|-------------------|--------------------|
+| `traffic_snapshots` | Extended by 0002 and 0004 | run ID; origin/baseline/change/acceleration/optional signals; request/concurrency/latency/checkout/error; desired/in-service capacity; positive `capacity_per_instance_rps`; tier/comparator/evidence | unique environment/time; run/time index; value checks; oldest-first bounded retention |
+| `scheduled_events` | Baseline retained | UTC start/end, IANA timezone, multiplier, lead times, ramp profile, minimum/peak/event ceiling, status | status/start index; time/capacity/ceiling checks |
+| `surge_predictions` / points | Extended by 0002 | run/environment/correlation/comparator/formula plus forecast and evaluation; points remain `(prediction_id, point_at)` | mode/status/time and run/time indexes; bounded point reads |
+| `scaling_actions` | Extended by 0002 and 0004 | exact-once command/correlation/capacity/outcome plus serialized `response_command`, requested tier, tier status/attempt/error, provider/reconciliation metadata | unique idempotency key; action ceiling checks; pending-tier partial index; atomic capacity+tier intent claim |
+| `load_shedding_events` | Extended by 0002 | run/prediction/snapshot/correlation, interval, levels, actor, reason/evidence/policy, app outcome | one open interval per environment; row lock; audit-preserving nullable links |
+| `demo_runs` | Created by 0002 | idempotent run/pair identity, server-effective configuration/thresholds/mode, lifecycle, Locust summary, typed formula-v1 metrics, references/warnings | unique client key; one active run per environment; environment/time and scenario/status indexes |
+| `response_retries` | Created by 0003 | unique dispatch/tier retry key, bounded command payload, desired tier, status/attempts/next time/error | due/correlation indexes, status/attempt checks, bounded exponential backoff; delivery aid rather than capacity authority |
 
 `demo_run_id` foreign keys use `ON DELETE SET NULL` so operational audit survives intentional test-run cleanup. Prediction points cascade only with their prediction. Scheduled-event, prediction, and snapshot records otherwise preserve history. All persisted datetimes are timezone-aware; the application normalizes them to UTC while retaining the event's IANA timezone string.
 
 ### 5.2 Repository and transaction design
 
-- `SnapshotRepository` bulk-inserts one evaluated row and serves bounded time/run queries.
+- `SnapshotRepository` inserts evaluated rows, serves bounded time/run queries, returns latest
+  evidence, and deletes the oldest expired IDs in bounded transactions.
 - `ScheduledEventRepository` locks/reads due events. Ramp exact-once behavior is represented by the scaling-action idempotency row rather than a second mutable scheduler ledger.
 - `PredictionRepository` commits prediction and points in one transaction and updates evaluation fields atomically.
-- `ScalingActionRepository.claim(idempotency_key, planned_action)` uses insert-on-conflict/read-existing semantics; provider work never occurs unless claim persistence succeeds.
+- `ScalingActionRepository.claim(idempotency_key, command)` uses insert-on-conflict/read-existing
+  semantics and atomically stores the complete command/requested tier stage; provider work never
+  occurs unless this durable intent exists. Duplicate capacity work is skipped while an incomplete
+  tier stage can resume.
 - `LoadSheddingStore` retains its row lock, interval close, and new interval insert in one transaction.
 - `DemoRunRepository` provides idempotent start/terminal transition and persists formula/versioned results.
+- `ResponseRetryRepository` schedules unique dispatch/tier retries, caps payload and attempts,
+  and supplies bounded due reads/reschedule/final status. Failure to enqueue a retry does not erase
+  the authoritative pending tier stage on `scaling_actions`.
+- `OperatorQueryRepository` applies configured time/row/cursor bounds. Snapshot paths serialize
+  through `DashboardSnapshotV1`; the remaining internal v1 operator rows use typed model columns.
 
 Every repository accepts an async session factory; service tests inject fakes and integration tests use PostgreSQL. No route manipulates ORM entities directly (NFR-9).
 
 ### 5.3 Migration approach
 
-The existing `20260818_0001_initial_schema.py` remains the baseline. A new reversible `20260818_0002_control_plane_extensions.py` creates `demo_runs`, adds nullable run/evaluation columns and indexes, then adds foreign keys after the new table exists. Upgrade supplies safe defaults only for non-null new fields; downgrade drops new FKs/indexes/columns and then `demo_runs`, returning exactly to revision 0001. CI tests `base → head → base → head` against PostgreSQL 16 and compares SQLAlchemy metadata at head. SQLite is not treated as migration proof because JSONB, partial indexes, and locking are PostgreSQL-specific (FR-2, NFR-13).
+The final schema head is `20260818_0004`:
+
+1. `0001_initial_schema` is the retained six-table baseline.
+2. `0002_control_plane_extensions` creates `demo_runs`; adds run, correlation, request,
+   concurrency, checkout, comparator, reconciliation, and formula fields; backfills prediction
+   correlation; and adds checks, nullable audit-preserving foreign keys, and bounded query indexes.
+3. `0003_runtime_reliability` creates `response_retries` with bounded command JSON, unique keys,
+   lifecycle/attempt checks, and due/correlation indexes.
+4. `0004_review_runtime_safety` adds positive per-snapshot RPS-per-instance and the atomic
+   scaling-action tier outbox (`response_command`, requested tier, status, attempts, error, and
+   pending index).
+
+All four revisions have executable downgrades. CI proves PostgreSQL 16
+`base → 0004 → base → 0004` and live repository behavior. Downgrade is structurally reversible but
+deletes the data held in removed tables/columns; writers must be stopped and pending actions/tier
+stages reconciled or abandoned before rollback. Final app/agent writers require revision 0004.
 
 ### 5.4 Retention and bounded data
 
-Default retention is configurable: raw snapshots 7 days locally, audit/prediction/run records retained until explicit operator cleanup, simulated readings only until TTL, and dashboard queries at most 24 hours/1,000 rows per request. A maintenance script deletes expired snapshots in small transactions and never cascades away audit records. Browser memory holds only the configured visible window (NFR-14).
+Default retention is configurable and enabled: raw snapshots older than seven days are deleted by
+the maintenance worker in oldest-first batches of 500. Audit/prediction/run/action/tier/retry
+records remain until explicit cleanup; nullable snapshot foreign keys preserve higher-level audit.
+Simulated readings expire by TTL. API queries are capped at the configured maximum window (one day
+locally) and 1,000 rows; browser memory retains only the selected visible window. Environments that
+need longer raw history must change retention deliberately and export/back up evidence before the
+first maintenance cycle (NFR-14).
 
 ### 5.5 Sensitive data
 
@@ -445,36 +627,46 @@ sequenceDiagram
   participant D as Protected demo app
   participant W as Real-time worker
   participant P as PostgreSQL
-  participant R as Response pipeline
+  participant R as Priority arbiter / response pipeline
   participant A as Auto Scaling adapter
 
   L->>D: Checkout/catalog/recommendation traffic
   L->>W: Authenticated optional simulated edge/queue/CPU signals
   loop Configured poll interval
-    W->>D: GET /metrics/snapshot
-    W->>W: Merge fresh providers; compute baseline, delta, acceleration, confidence
-    W->>P: Persist traffic snapshot
-    alt confirmation threshold reached
-      W->>P: Persist prediction and forecast points
-      W->>R: ResponseCommand with stable idempotency key
-      R->>P: Claim planned scaling action
-      alt dry-run (default)
-        R->>A: Read/simulate capacity only
-        A-->>R: dry-run applied capacity
-      else explicit live mode
-        R->>A: Set desired capacity after second clamp
-        A-->>R: provider request ID or error
+    W->>P: Read active run identity
+    alt active-run lookup unavailable
+      W->>W: Health unavailable; no collect/detect/mutate; bounded retry
+    else run identity available
+      W->>D: GET /metrics/snapshot
+      W->>W: Merge fresh providers; compute baseline/change/acceleration/confidence
+      W->>P: Persist capacity-backed traffic snapshot
+      alt confirmation threshold reached
+        W->>P: Persist prediction and forecast points
+        W->>R: Immutable command with PROTECT/detector intent
+        R->>A: Refresh authoritative capacity
+        R->>D: Read authoritative tier
+        R->>R: Priority/active-requirement/ceiling checks
+        R->>P: Atomic claim: action + complete command + pending tier
+        alt dry-run (default)
+          R->>A: Simulated execution (no boto3 client)
+        else explicit live scale-out
+          R->>A: SetDesiredCapacity, HonorCooldown=false
+        end
+        R->>P: Persist capacity outcome
+        R->>D: POST /internal/load-shedding with token/correlation
+        D->>P: Commit interval before activation
+        D-->>R: Applied tier/policy
+        R->>P: Complete tier stage or retain pending outbox
       end
-      R->>P: Persist action outcome and cooldown
-      R->>D: POST /internal/load-shedding with token and correlation
-      D->>P: Close/open interval in transaction
-      P-->>D: Commit
-      D-->>R: Applied tier/policy
     end
   end
 ```
 
-If the DB insert/claim fails, the response pipeline makes no AWS or tier call. If an optional signal is stale, it is excluded and confidence reflects its absence. If AWS live scaling fails, the action becomes failed and the tier can still increase to protect checkout, using the same correlation (R-3, R-4, R-5).
+If the active-run lookup, snapshot/prediction persistence, or action claim fails, the worker makes
+no AWS or tier call. Its outer cycle fence rethrows cancellation but converts every other exception
+to unavailable health and keeps polling. Optional stale signals are excluded. An unambiguous live
+capacity failure is audited and may still permit protective tier delivery; an ambiguous mutation is
+`unknown`, blocks scale-in, and is reconciled before more recovery work (R-3, R-4, R-5).
 
 ### 6.2 Scheduled Diwali prewarm
 
@@ -483,25 +675,26 @@ sequenceDiagram
   participant S as Seed script
   participant P as PostgreSQL
   participant W as Scheduled worker
-  participant R as Ramp planner / response pipeline
+  participant R as Planner / priority arbiter / pipeline
   participant A as Capacity adapter
   participant D as Demo app
 
   S->>P: Upsert active timezone-aware Diwali event and ramp
   loop Scheduled poll
     W->>P: Read events intersecting prewarm/recovery horizon
-    W->>R: Submit each due ramp point with event/offset key
-    R->>P: Claim unique scaling action
+    W->>R: Submit latest due safe ramp with PREWARM intent/event key
+    R->>R: Refresh capacity/tier; retain strongest overlapping event
+    R->>P: Claim action + optional tier stage
     alt already claimed
       P-->>R: Existing outcome; no provider call
     else new claim
-      R->>A: Dry-run or explicit live bounded desired capacity
+      R->>A: Dry-run or live increase (HonorCooldown=false)
       A-->>R: Result
       R->>P: Persist outcome
     end
   end
-  W->>D: Optional level 1 transition near event start
-  D->>P: Persist transition before activation
+  R->>D: Optional level 1 transition near event start
+  D->>P: Persist transition before activation; complete outbox
 ```
 
 Restarting the worker re-derives the same ramp keys; completed points are no-ops and overdue points are handled by a configured catch-up policy that selects the latest due safe capacity rather than replaying every obsolete mutation.
@@ -510,38 +703,53 @@ Restarting the worker re-derives the same ramp keys; completed points are no-ops
 
 ```mermaid
 sequenceDiagram
-  participant W as Recovery worker
+  participant W as Realtime / maintenance recovery callers
+  participant M as Maintenance + dependency supervisor
   participant P as PostgreSQL
   participant R as Response pipeline
   participant D as Demo app
   participant F as Feedback evaluator
 
   loop Each evaluation window
-    W->>P: Read recent low-load evidence and last cooldown/action
+    W->>P: Supply distinct persisted snapshot identity + authoritative state
     alt insufficient sustained-low evidence or cooldown active
       W->>P: Audit skipped hold decision
     else eligible step
-      W->>R: Command: decrement capacity and tier by one bounded step
-      R->>P: Claim and persist response outcome
+      W->>R: RECOVER command: one bounded capacity/tier decrement
+      R->>R: Priority arbiter rejects stale/superseded recovery
+      R->>P: Claim complete action/tier intent
+      R->>R: Adapter scale-in honors provider cooldown
+      R->>P: Persist capacity outcome
       R->>D: Authenticated lower tier
       D->>P: Commit interval transition
     end
   end
+  M->>P: Reconcile planned/unknown actions
+  M->>R: Resume pending tier stages / due bounded retries
+  M->>P: Delete oldest expired snapshots in bounded batch
   W->>F: Floor capacity and tier 0 stable, or prediction horizon complete
   F->>P: Read snapshots, predictions, actions, transitions, demo-run data
   F->>F: Calculate actual peak, lead, prediction error, p99/success, efficiency
   F->>P: Close prediction/run with formula-versioned results
 ```
 
-New qualifying high-load evidence interrupts recovery and returns to `PROTECT`; it does not wait for scale-in cooldown. Lowering protection always waits for cooldown and sustained-low confirmation (FR-11, NFR-3).
+New qualifying high-load evidence interrupts recovery and returns to `PROTECT`; live scale-out does
+not wait for ASG cooldown. Lowering protection requires a unique persisted low snapshot,
+confirmation threshold, Pulse cooldown, `RECOVER` intent, and provider cooldown. The dependency
+supervisor and task inspection keep health truthful while maintenance reconciles/resumes durable
+work (FR-11, NFR-3).
 
 ### 6.4 Reproducible local scenario lifecycle
 
 1. `scripts/reset_demo.py` closes stale demo runs, returns tier to 0 through the authenticated API, clears only opted-in generated/simulation state, and upserts deterministic defaults.
 2. `scripts/seed_scheduled_events.py` upserts the Diwali event relative to a provided start time and prints its UUID/configuration.
-3. A wrapper creates a `demo_runs` record, starts Locust headless with recorded users/spawn rate/duration/host, and posts deterministic leading-signal frames when required.
+3. A wrapper creates a `demo_runs` record with pair identity. The server persists sanitized
+   effective workload/control/provider settings, then the wrapper starts Locust headless and posts
+   deterministic leading-signal frames when required.
 4. The scheduled scenario ramps traffic around the seeded event; the sudden scenario starts from a steady baseline and then applies an unannounced steep ramp. Both mix checkout, catalog, and recommendations.
-5. The wrapper posts Locust summary values to the terminal run endpoint. The evaluator waits for the configured feedback horizon, then the wrapper exports a JSON/Markdown summary from the run-detail API.
+5. The wrapper posts Locust summary values to the terminal run endpoint. The evaluator waits for
+   the configured feedback horizon, joins persisted capacity-backed `pulse.snapshot.v1` evidence,
+   and the wrapper exports a JSON/Markdown summary from the run-detail API.
 6. The README gives exact commands for a Pulse run and a reactive-only comparator run. Output directories are gitignored and claims remain tied to run IDs.
 
 ## 7. Risks
@@ -561,6 +769,27 @@ New qualifying high-load evidence interrupts recovery and returns to `PROTECT`; 
 | D-1 | Provider succeeds but final DB update fails | Action state temporarily uncertain | Persist planned record before call, provider request ID when available, reconcile planned/unknown rows against ASG state, block further scale-in while uncertain | Response/reconciliation |
 | D-2 | Clock skew misclassifies ramp/TTL/cooldown | Early/late action | UTC-aware injected clock, reject excessive future/past simulated frames, NTP prerequisite for live demo, clock-boundary tests | Scheduler/config |
 | D-3 | Demo app restart loses cached catalog/rate-limiter state | Temporary behavioral discontinuity | Cache content is deterministic and non-critical; authoritative tier reloads from DB; status exposes restart/metrics window | Demo app/operability |
+
+### 7.1 Post-implementation risk update
+
+Independent impact analysis rates the as-built delivery **MEDIUM** with no critical break. The
+original R-1 through R-10 and D-1 through D-3 design risks are mitigated by the implemented tests,
+bounded defaults, durable intent, and runbooks; they remain relevant operating concerns rather
+than being deleted from design history.
+
+| Compatibility / lifecycle item | Residual exposure | Required mitigation |
+|--------------------------------|-------------------|---------------------|
+| BC-1: demo `/health` can return 503 and has a richer body | Exact-shape or always-200 probes may misclassify recoverable readiness as process death | Parse `ready`/`persistence`; define liveness separately before non-Compose deployment |
+| BC-2: strict `/internal/load-shedding` validation and 409/503 contracts | Older internal callers with unknown fields or unconditional retry may fail | Validate final DTO; refresh authoritative state on 409; bounded backoff on 503 |
+| BC-3: bounded/fixed-cardinality demo metrics | Consumers of arbitrary path keys or an exact legacy payload may fail | Use documented aggregate/endpoint fields and observe truncation counters |
+| BC-4: seven-day raw snapshot retention enabled by default | Long-horizon evidence can be pruned while higher-level audit remains | Choose retention explicitly and export/back up evidence before rollout |
+
+Additional operational residuals are documented, not hidden: revision 0004 must precede final
+writers; rollback downgrades discard new data; pending/unknown actions and tier stages must be
+reconciled before rollback; only one active agent replica is supported; operator reads need network
+restriction outside local use; live scale-out deliberately bypasses provider cooldown but remains
+arbitrated and ceiling-bound; and Terraform supplies a bounded ASG target rather than a full
+application deployment. These are limitations/rollout controls, not failed Option 1 acceptance.
 
 ## 8. Edge cases
 
@@ -591,9 +820,17 @@ New qualifying high-load evidence interrupts recovery and returns to `PROTECT`; 
 | Event cancelled during prewarm | Do not drop immediately; enter sustained-low recovery and gradual cooldown | FR-11 |
 | High load returns during recovery | Interrupt scale-in/tier reduction and return to protect; scale-out remains permitted | FR-11, NFR-3 |
 | Dashboard requests unbounded/invalid range | HTTP 422; configured maximum range and row cap are always applied | FR-15, NFR-14 |
-| Parallel demo runs | Rejected by default per environment to keep attribution sound; test-only explicit override labels results non-comparable | FR-21, NFR-15 |
+| Parallel demo runs | Database partial uniqueness rejects a second active run per environment to keep attribution sound | FR-21, NFR-15 |
 | Run fails or is cancelled | Persist terminal status and available raw evidence; do not calculate/display comparative improvement as complete | NFR-15 |
 | Zero traffic/provisioned denominator | Efficiency/error formulas return `not_available` with warning rather than divide by zero | FR-21 |
+| Active-run lookup fails before collection | Mark realtime unavailable, collect/detect/mutate nothing for that cycle, keep the same task alive, and retry after the bounded poll | NFR-3, NFR-11 |
+| Mandatory worker task stops | Agent health inspects task completion and returns 503 even if the last heartbeat was healthy | NFR-11 |
+| Protection and recovery arrive together | Priority arbiter serializes them; renewed/stronger protection wins and stale recovery is audited as a hold | FR-8, FR-11 |
+| Tier delivery or retry enqueue fails after capacity | Atomic action outbox remains pending with the original command; maintenance resumes only the tier stage without repeating capacity | NFR-3, NFR-4 |
+| Unsupported snapshot DTO reaches dashboard | Browser omits the invalid row and shows a partial-data warning rather than inventing capacity/traffic values | FR-14, NFR-15 |
+
+All original and added edge cases above have deterministic or exact-SHA cross-stack evidence in the
+final QA report; none is waived.
 
 ## 9. Testing strategy
 
@@ -605,12 +842,12 @@ New qualifying high-load evidence interrupts recovery and returns to `PROTECT`; 
 | Unit: safety/state | Fake repositories, demo client, and AWS client cover dry-run, double clamp, noop/capped/failed, stable keys, cooldown, recovery interruption, checkout matrix | `.venv/bin/pytest -q tests/unit` | FR-5, FR-8, FR-9, FR-11, NFR-1–NFR-4 |
 | API/contract | FastAPI test clients validate every endpoint schema, filter/range caps, auth failures, persistence failure, and no secret fields | `.venv/bin/pytest -q tests/api` | FR-4–FR-6, FR-14, FR-15, NFR-7, NFR-11 |
 | PostgreSQL integration | Real PostgreSQL validates async repositories, row locks, unique command claims, intervals, bounded indexes, UTC fields, and audit records | `.venv/bin/pytest -q tests/integration` | FR-2, FR-8, FR-10, FR-12, NFR-3, NFR-4, NFR-13 |
-| Migration | Upgrade/downgrade/re-upgrade from base and metadata/schema smoke against PostgreSQL 16 | `docker compose run --rm migrate-test` | FR-2, FR-18, NFR-13 |
-| AWS adapter | Botocore Stubber/fakes prove exact calls, no mutation in dry-run, ceiling before client, request ID/error mapping, and throttling reconciliation | `.venv/bin/pytest -q tests/unit/agent/aws tests/integration/agent/aws` | FR-9, NFR-1, NFR-8 |
-| Detector end-to-end | Compose + deterministic published frames verifies trigger precedes comparator, action/tier audit, recovery, and checkout protection | `.venv/bin/pytest -q tests/e2e/test_sudden_spike.py` | FR-6–FR-9, FR-11, FR-12 |
-| Scheduled end-to-end | Seed relative event + accelerated deterministic clock/short ramp verifies exact-once prewarm and recovery | `.venv/bin/pytest -q tests/e2e/test_scheduled_event.py` | FR-10–FR-13 |
+| Migration | Upgrade/downgrade/re-upgrade from base and metadata/schema smoke against PostgreSQL 16 | `python -m alembic -c db/alembic.ini upgrade head`, downgrade `base`, then upgrade `head` | FR-2, FR-18, NFR-13 |
+| AWS adapter | Botocore Stubber/fakes prove exact calls, no mutation in dry-run, ceiling before client, request ID/error mapping, intent-aware cooldown, and reconciliation | `.venv/bin/pytest -q tests/unit/agent/aws` | FR-9, NFR-1, NFR-8 |
+| Detector end-to-end | Deterministic published frames verify trigger precedes comparator, action/tier audit, recovery, and checkout protection | `.venv/bin/pytest -q tests/e2e/test_surge_modes.py::test_sudden_spike_predicts_and_protects_before_reactive_comparator` | FR-6–FR-9, FR-11, FR-12 |
+| Scheduled end-to-end | Relative event plus accelerated deterministic clock/short ramp verifies exact-once prewarm and recovery | `.venv/bin/pytest -q tests/e2e/test_surge_modes.py::test_scheduled_diwali_reaches_bounded_peak_once_before_start` | FR-10–FR-13 |
 | Locust smoke | Short headless scenarios validate tasks, run lifecycle, reset, and exported evidence; performance claims use documented longer run | `load_tests/scripts/run_sudden_spike.sh --smoke` and `run_scheduled.sh --smoke` | FR-13, FR-21, NFR-12, NFR-15 |
-| Dashboard | Component tests for status/actions/charts/warnings plus mocked API and production build | `npm --prefix dashboard test -- --run` and `npm --prefix dashboard run build` | FR-14, FR-21 |
+| Dashboard | Component tests for status/actions/charts/warnings plus mocked API and production build | `pnpm --dir dashboard test` and `pnpm --dir dashboard build` | FR-14, FR-21 |
 | Compose | Parse configuration and start health-gated stack; curl health/status/checkout | `docker compose config` and documented smoke script | FR-16, NFR-11, NFR-12 |
 | Terraform | Format, init without backend, validate, policy assertions; no apply in CI | `terraform -chdir=infra fmt -check -recursive`; `terraform -chdir=infra init -backend=false`; `terraform -chdir=infra validate` | FR-17, NFR-1, NFR-8 |
 | Regression/full | Compile all Python packages, Ruff, full coverage ≥85% | `.venv/bin/python -m compileall -q common db demo_app agent load_tests tests`; `.venv/bin/ruff check .`; `.venv/bin/pytest -q --cov=common --cov=db --cov=demo_app --cov=agent --cov-fail-under=85` | FR-18, NFR-9, NFR-10 |
@@ -624,10 +861,14 @@ New qualifying high-load evidence interrupts recovery and returns to `PROTECT`; 
 - Recovery needs the exact sustained-low count, lowers capacity by no more than the configured decrement, respects floor/cooldown, and returns tier one step at a time.
 - Checkout returns success/normal mode at levels 0–3, during adapter failure, and throughout both local scenarios.
 - Result calculations reconcile to fixture snapshots/actions and correctly label missing comparator, incomplete run, and zero denominator.
+- The cross-mode priority arbiter prevents recovery from overriding renewed protection, and live scale-out bypasses provider cooldown while recovery scale-in honors it.
+- Capacity mutation plus the load-shedding command are persisted atomically; maintenance resumes a pending tier stage or bounded retry without repeating capacity mutation.
+- `pulse.snapshot.v1` responses expose explicit ASG desired/in-service capacity and the dashboard rejects unsupported versions without fabricating values.
+- Dependency supervision recreates failed database/client dependencies in-process, while health reports any stopped mandatory worker as unavailable.
 
 ### 9.3 GitHub Actions design
 
-Pull-request workflows use pinned major action versions and least job permissions. Separate jobs run: Python compile/Ruff/coverage; PostgreSQL 16 service plus migration cycle; dashboard `npm ci`, tests, and build; Dockerfile build and `docker compose config`; Terraform format/init/validate; and a secret scan that does not upload credentials or Terraform state. Dependency caches key on lock files. No job obtains AWS credentials or runs `terraform apply`. All jobs must pass before PR handoff (FR-19).
+Pull-request workflows use pinned major action versions and least job permissions. Six separate jobs run: Python compile/Ruff/coverage; PostgreSQL 16 service plus the `0001`–`0004` migration cycle and live repository integration; dashboard `pnpm install --frozen-lockfile`, tests, and build; Dockerfile build and `docker compose config`; Terraform format/init/validate plus policy assertions; and a secret scan that does not upload credentials or Terraform state. Dependency caches key on lock files. No job obtains AWS credentials or runs `terraform apply`. The final code-SHA push and PR runs, plus the post-context-sync push and PR runs, all passed before documentation synchronization (FR-19).
 
 ### 9.4 Complete-delivery scope table
 
@@ -636,7 +877,7 @@ Pull-request workflows use pinned major action versions and least job permission
 | Shared contracts | `common/contracts.py`, `common/enums.py`, `common/logging.py` | Contracts/logging | Enums | None by default |
 | Protected application | `demo_app/app/main.py`, `config.py`, `metrics.py`, `schemas.py`, `routes/`, `shedding/`, `demo_app/Dockerfile` | Integration helpers if required | Metrics/status/control and DI | No route/file; checkout remains |
 | Control plane | `agent/Dockerfile`, `agent/app/{api,aws,detection,metrics,orchestration,repositories,services,workers}/**` | Entire agent runtime | N/A | None |
-| Persistence | `db/models/**`, `db/repositories/**`, `db/migrations/versions/20260818_0002_control_plane_extensions.py`, `db/session.py` | Repositories/migration/run model | Existing models/session | None; 0001 retained |
+| Persistence | `db/models/**`, `db/repositories/**`, `db/migrations/versions/20260818_0002_control_plane_extensions.py`, `20260818_0003_runtime_reliability.py`, `20260818_0004_review_runtime_safety.py`, `db/session.py` | Repositories/migrations/run and response-retry models | Existing models/session | None; 0001 retained |
 | Load scenarios | `load_tests/**`, `scripts/seed_scheduled_events.py`, `scripts/publish_test_metrics.py`, `scripts/reset_demo.py`, `scripts/export_results.py` | Both scenarios/wrappers/scripts | N/A | None |
 | Dashboard | `dashboard/**` | Next.js app/components/API client/tests/Dockerfile/lockfile | N/A | None |
 | Local orchestration | `docker-compose.yml`, `.env.example`, `.gitignore`, `Makefile`, optional root config | Agent/dashboard/Locust services and tasks | Existing Compose/env/ignore/tasks | Remove superseded keys only if replaced |
@@ -648,39 +889,107 @@ Pull-request workflows use pinned major action versions and least job permission
 
 ### 9.5 Verification checklist
 
-- [ ] Every FR-1–FR-22 and NFR-1–NFR-15 has at least one passing automated check or documented external-evidence step; local implementation has no placeholders.
-- [ ] `.venv/bin/python -m compileall -q common db demo_app agent load_tests tests` passes.
-- [ ] `.venv/bin/ruff check .` passes.
-- [ ] `.venv/bin/pytest -q --cov=common --cov=db --cov=demo_app --cov=agent --cov-fail-under=85` passes.
-- [ ] PostgreSQL 16 migration succeeds `base → head → base → head`, and schema/repository integration tests pass.
-- [ ] Dashboard `npm ci`, test, and production build pass.
-- [ ] `docker compose config` passes and the clean local stack reaches healthy state in dependency order.
-- [ ] Both smoke Locust scripts complete, checkout stays normal, and run-detail APIs return traceable metrics or explicit not-available warnings.
-- [ ] Sudden-spike fixture records positive lead over the reactive comparator; scheduled fixture executes each ramp point once and reaches peak before event start.
-- [ ] Dry-run tests prove zero mutating boto3 calls; all capacity outcomes are within the ceiling.
-- [ ] Terraform format/init/validate and IAM policy assertions pass without AWS credentials; no apply occurs for Option 1.
-- [ ] Secret/ignore review finds no `.env`, AWS credential, token, key, Terraform state/plan, generated load output, or dashboard build artifact.
-- [ ] GitHub Actions checks are green; dependency versions are reconciled; Compose images build.
-- [ ] Branch is based on `codex/demo-app-foundation`, committed and pushed, and an open unmerged PR targets that base.
+- [x] Every FR-1–FR-22 and NFR-1–NFR-15 has passing automated or exact-SHA cross-stack evidence; there are no placeholders.
+- [x] Python compile and Ruff pass on the final code SHA.
+- [x] The complete Python suite passes: 215 tests with 87.81% statement coverage, above the 85% gate.
+- [x] PostgreSQL 16 succeeds through the reversible `0001 → 0004 → base → 0004` migration cycle, and four live integration tests pass.
+- [x] Dashboard install, eight tests, and production build pass with pnpm.
+- [x] Docker images and `docker compose config` pass; the clean health-gated stack starts successfully.
+- [x] Both clean-stack Locust smoke scenarios complete with checkout protected and traceable run evidence.
+- [x] Deterministic sudden-spike and scheduled-event evidence validates prediction lead, exact-once ramps, arbitration, recovery, and durable tier delivery.
+- [x] Dry-run tests prove zero mutating boto3 calls; live adapter tests validate the ceiling, intent-aware cooldown, reconciliation, and provider-region behavior.
+- [x] Terraform format/init/validate and 12 policy assertions pass without AWS credentials; no apply occurred.
+- [x] Secret and ignore checks find no credentials, Terraform state/plan, generated load output, or dashboard build artifact.
+- [x] All six jobs passed in final code-SHA push run `32162277011` and PR run `32162281762`, and again after context synchronization in push run `32164874462` and PR run `32164879441`.
+- [x] The branch is based on `codex/demo-app-foundation`, is pushed, and PR #1 remains open, draft, and unmerged.
 
-### 9.6 Removal list
+### 9.6 Completed cleanup record
 
-Mandatory remove-on-touch work:
+The delivered branch replaced the prior partial-delivery README guidance, removed superseded
+environment/config references, and contains one response pipeline and one Auto Scaling adapter with no
+placeholder detector, adapter, or dashboard implementation. Review and QA found no orphaned touched
+imports, tests, or configuration. Existing commerce routes, the original migration, and regression
+tests were preserved; cleanup was limited to evidence-backed superseded material.
 
-- Replace README language that labels the repository a “first implementation slice” or says required components will be added later.
-- Remove any superseded environment/config keys introduced during refactoring and their references in Compose, tests, and docs.
-- Remove commented-out or placeholder detector/adapter/dashboard implementations before QA; there must be one response pipeline and one Auto Scaling adapter.
-- Remove orphan imports/tests/config immediately when a touched path supersedes them.
+## 10. Implementation notes
 
-No existing production file, commerce route, model, migration, or regression test is designated for wholesale deletion in default scope. If the optional cleanup checkbox is selected, planning first inventories additional dead files/code and deletes only evidence-backed unused artifacts in the affected area.
+### 10.1 Delivery record
 
-## 10. Appendix
+| Field | Final value |
+|-------|-------------|
+| Implementation status | `IMPLEMENTED` |
+| Reconciliation date | 2026-08-18 |
+| Feature branch | `complete-predictive-surge-platform` |
+| Base branch | `codex/demo-app-foundation` |
+| Final reviewed code SHA | `034b82df24fda3abf9bd83eb48e229e885601385` |
+| Project-context sync SHA | `41da588c0fea3d170bfbb848b5884a5d21bb4de2` |
+| Pull request | [#1](https://github.com/Suryavarma333/pulse-engine/pull/1), open and draft |
+| Jira | `PENDING-EPIC` — manifest-only dry run because Jira integration is disabled |
+| BugBot | Waived because BugBot is disabled; independent review completed with no open findings |
+| Merge/deploy | Not performed |
 
-### 10.1 Jira
+**Merge status:** Pending — SDD synced to the open draft PR branch HEAD as of 2026-08-18.
 
-_(Epic ID after Jira agent; Jira integration is disabled in current project context, so downstream planning may proceed without external issue creation.)_
+The complete platform was delivered: predictive and scheduled detection; one priority-arbitrated,
+capacity-safe response pipeline; durable tier delivery and retry recovery; independent dependency
+supervision; versioned dashboard evidence; paired demo-run attribution; clean Compose scenarios; bounded
+Terraform; and six-job CI. The final review found no blocker, major, or minor issue. QA passed 215 Python
+tests at 87.81% coverage, four live PostgreSQL integration tests, eight dashboard tests and build, both
+Locust smoke scenarios, the migration cycle through `0004`, Terraform validation and 12 assertions,
+Compose validation/build/clean startup, and secret scanning.
 
-### 10.2 Architecture decisions
+### 10.2 Design-to-implementation drift
+
+The following changes preserve the original product intent and record review-driven hardening. No
+functional requirement was removed.
+
+| ID | Design area | As-built reconciliation | Impact |
+|----|-------------|-------------------------|--------|
+| D-1 | Runtime topology | The lifecycle now runs real-time, scheduled, feedback, and maintenance workers plus an independent dependency supervisor; maintenance owns shared recovery and repository cleanup, and health inspects actual task liveness. | Low; stronger failure recovery. |
+| D-2 | Response coordination | A single priority arbiter performs authoritative provider refresh and merges active real-time/scheduled requirements before mutation. | Low; closes cross-mode races. |
+| D-3 | Durable retries | Migration `0003` adds persisted bounded `response_retries` for delivery/recovery work. | Low; improves restart safety. |
+| D-4 | Atomic tier delivery | Migration `0004` adds the persisted response command, requested tier, tier-stage state, retry metadata, and `capacity_per_instance_rps`; capacity action and tier outbox are one transaction. | Low; closes split-brain response gaps. |
+| D-5 | Dashboard contract | Raw transport dictionaries became explicit `pulse.snapshot.v1`/page DTOs with ASG desired and in-service values and derived pending capacity. | Low; introduces an intentional version boundary. |
+| D-6 | AWS providers | Optional CPU/SQS use the workload region, CloudFront uses a separately configured `us-east-1` metrics region, and HTTP remains an optional session source; dry-run creates no AWS clients. | Low; makes local and AWS modes explicit. |
+| D-7 | Provider cooldown | Live protection/prewarm scale-out uses `HonorCooldown=False`; gradual recovery scale-in uses `HonorCooldown=True`. | Low; aligns AWS behavior with intent. |
+| D-8 | Retention | Maintenance enforces configurable seven-day raw-snapshot retention in bounded batches while preserving predictions, actions, events, and run evidence. | Medium; operators must export raw evidence needing longer retention. |
+| D-9 | Infrastructure boundary | Terraform provisions only the bounded Auto Scaling target and IAM/monitoring support, not the whole application/network/data platform. | Low; accurately constrains apply scope. |
+| D-10 | Client compatibility | Demo health, shedding-control validation/conflicts, metrics endpoint bounds, and default raw retention have four mitigable compatibility/lifecycle changes. | Medium; rollout notes and client updates are required. |
+
+### 10.3 Residual risk and rollout notes
+
+Residual delivery risk is **MEDIUM**, entirely from four mitigable compatibility/lifecycle changes:
+
+1. Demo `/health` now has a richer body and returns 503 while persistence is unavailable; clients must
+   use status semantics rather than assuming HTTP 200.
+2. `/internal/load-shedding` rejects unknown fields and missing/invalid evidence and uses structured
+   409/503 responses; callers must send the typed request and handle those statuses.
+3. `/metrics/snapshot` accepts only bounded, fixed-cardinality endpoint selectors; callers using
+   arbitrary paths must migrate to the documented selector set.
+4. Raw traffic snapshots are retained for seven days by default; operators needing longer raw evidence
+   must export it or increase retention before rollout.
+
+Migrations `0002`–`0004` are additive and structurally reversible, but downgrade deletes their data.
+Before rollback, drain pending scaling actions, tier stages, and response retries. Only one active agent
+replica is supported because the arbiter is process-local. Operator reads remain unauthenticated and must
+be network-restricted. Live AWS operation needs explicit target configuration, credentials, provider
+regions, and approvals; Terraform does not deploy the full platform.
+
+### 10.4 Design changelog
+
+| Version | Date | Change |
+|---------|------|--------|
+| 1.0 | 2026-08-18 | Approved complete-platform design before implementation. |
+| 1.1 | 2026-08-18 | Reconciled every section to the reviewed as-built code, final MDC context, exact CI/QA evidence, drift, compatibility changes, and delivery metadata. |
+
+## 11. Appendix
+
+### 11.1 Jira
+
+`PENDING-EPIC` is retained as the manifest-only dry-run identifier. Jira integration is disabled, so no
+external issue or link was created.
+
+### 11.2 Architecture decisions
 
 | Decision | Choice | Rationale / consequence |
 |----------|--------|-------------------------|
@@ -688,21 +997,25 @@ _(Epic ID after Jira agent; Jira integration is disabled in current project cont
 | Detector integration | Both detectors create one typed response command | Eliminates safety bypass/duplicated AWS paths and makes audit/recovery consistent. |
 | Metrics transport | Agent polls bounded demo snapshot; optional providers implement a protocol | Keeps protected requests non-blocking and makes local signals reproducible. |
 | Control transport | Agent calls demo app internal HTTP API | Preserves application ownership and persist-before-activate semantics; token stays server-side. |
-| Persistence | PostgreSQL/async SQLAlchemy repositories with a second reversible migration | Reuses the schema and supports locks, JSONB, partial indexes, UTC history, and dashboard queries. |
+| Persistence | PostgreSQL/async SQLAlchemy repositories with additive reversible migrations `0002`–`0004` | Reuses the schema and adds locks, JSONB, partial indexes, UTC history, capacity evidence, and durable outbox/retry state. |
 | Idempotency | Stable command key plus unique planned action claim | Repeated polling/restarts do not repeat provider mutation. |
+| Cross-mode arbitration | One process-local priority arbiter with authoritative refresh and active-requirement merge | Protection/prewarm wins over stale recovery and all mutation uses one serialized pipeline; one agent replica is currently supported. |
+| Tier delivery | Persist response command and tier stage atomically with the scaling action | Maintenance can resume a tier stage without repeating capacity mutation. |
+| Runtime recovery | Mandatory workers plus an independent dependency supervisor | Dependency construction failure is recoverable in-process and health reflects stopped tasks. |
+| Snapshot API | Explicit `pulse.snapshot.v1` and bounded page DTOs | Prevents dashboard field guessing and supports additive versioned evolution. |
 | Forecasting | Rolling statistics as mandatory v1; exponential smoothing behind strategy boundary | Reproducible and understandable without heavyweight ML; broader Option 3 compares models. |
 | Live updates | REST polling rather than WebSockets | Meets live demo needs with lower complexity and bounded API behavior. |
 | AWS safety | Local dry-run default; one adapter; Terraform apply outside CI | Avoids credentials/cost in mandatory acceptance while delivering live-ready integration. |
 | Run attribution | Typed `demo_runs` record plus nullable run FKs | Makes portfolio claims and scenario inputs independently auditable. |
 
-### 10.3 Open questions and design defaults
+### 11.3 Open questions and design defaults
 
 1. **AWS account-specific region/network/instance/ceiling:** non-blocking for Option 1. Terraform requires explicit variables and uses conservative example values; live apply/mutation occurs only under Option 2/3 after authorization.
 2. **Numeric portfolio improvements:** non-blocking. The platform implements versioned formulas and evidence export; docs show placeholders until an actual paired run produces values.
 
 There are no unresolved questions that block implementation of the selected default scope.
 
-### 10.4 Reference files reviewed
+### 11.4 Reference files reviewed
 
 - `docs/sdlc/daefa536-d064-42a8-aaef-98272b2b332e/complete-predictive-surge-platform-requirements.md`
 - `README.md`, `pyproject.toml`, `Makefile`, `.env.example`, `.gitignore`, `docker-compose.yml`
@@ -710,10 +1023,11 @@ There are no unresolved questions that block implementation of the selected defa
 - `demo_app/app/main.py`, `config.py`, `metrics.py`, `schemas.py`, `routes/operations.py`, `routes/protected.py`
 - `demo_app/app/shedding/policies.py`, `rate_limiter.py`, `state.py`, `store.py`
 - `db/base.py`, `db/session.py`, `db/types.py`, `db/models/**`
-- `db/migrations/env.py`, `db/migrations/versions/20260818_0001_initial_schema.py`
+- `db/migrations/env.py`, `db/migrations/versions/20260818_0001_initial_schema.py`, `20260818_0002_control_plane_extensions.py`, `20260818_0003_runtime_reliability.py`, `20260818_0004_review_runtime_safety.py`
 - `tests/unit/demo_app/**`, `tests/unit/db/test_schema.py`
-- Workflow project, architecture, coding, deployment, and business-flow context captured in state for this workflow.
+- Final implementation, QA, review, impact, flow-validation, compile-verification, and project-context-sync reports for workflow `daefa536-d064-42a8-aaef-98272b2b332e`.
+- Final project, architecture, coding, deployment, and business-flow MDC context for this workflow.
 
-### 10.5 Out-of-scope confirmation
+### 11.5 Out-of-scope confirmation
 
 Implementation must not expand into enterprise authentication, shopper features, production-scale managed networking/data systems, distributed control-plane consensus, automatic PR merge/deploy, or heavyweight ML. Option 1 still delivers the complete requested platform; Option 2 adds authorized live AWS evidence, and Option 3 adds only a lightweight forecasting comparison.

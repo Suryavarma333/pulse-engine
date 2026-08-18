@@ -9,6 +9,7 @@ an improvement from a smoke-only correctness run.
 | Field | Reactive-only | Pulse |
 |---|---|---|
 | run ID | `not available` | `not available` |
+| pair group ID / pair role | `not available` | `not available` |
 | evidence URI/path | `not available` | `not available` |
 | scenario | `sudden-spike` or `scheduled-diwali` | same |
 | status | `not available` | `not available` |
@@ -19,7 +20,10 @@ an improvement from a smoke-only correctness run.
 | duration / users / spawn stages | `not available` | same |
 | endpoint weights | checkout 5, catalog 3, recommendations 2 | same |
 | detector thresholds | `not available` | `not available` |
-| capacity per instance / ceilings | `not available` | same |
+| settings snapshot version | `v1` | `v1` |
+| snapshot schema version | `pulse.snapshot.v1` | `pulse.snapshot.v1` |
+| capacity per instance / floor / ceilings | `not available` | same |
+| provider regions (workload / CloudFront) | `not available` | same |
 | formula version | `v1` | `v1` |
 | warnings | `not available` | `not available` |
 
@@ -65,12 +69,18 @@ and unobserved recovery must remain `not available` with their emitted warning.
       capacity assumptions match.
 - [ ] The exported raw Locust summary reconciles request/failure and checkout percentile values.
 - [ ] Prediction, snapshot, scaling-action, and shedding-event references resolve.
+- [ ] Each traffic row declares `pulse.snapshot.v1` and includes ASG desired, in-service, derived
+      pending capacity, and the persisted per-instance capacity assumption used by formulas.
+- [ ] The server-recorded effective settings snapshot is version `v1`, and the paired runs share the
+      same pair group with complementary reactive/Pulse roles.
 - [ ] Sudden-spike prediction precedes the comparator for any positive lead claim.
 - [ ] Scheduled peak action is due and recorded before the event start and appears once.
 - [ ] All capacity outcomes are at or below the effective ceiling.
 - [ ] Checkout stays `normal` at levels 0–3 and its success/p99 claims use actual attempts.
 - [ ] Warnings and unavailable metrics remain visible in the published result.
 - [ ] Environment variance and dry-run versus live limitations are disclosed.
+- [ ] Raw evidence needed beyond the default seven-day snapshot-retention window was exported before
+      cleanup, and the evidence URI remains accessible to reviewers.
 
 ## Narrative
 

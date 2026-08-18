@@ -18,21 +18,26 @@ flowchart TB
     Realtime["Acceleration + leading-signal detector"]
     Scheduled["Calendar detector + ramp planner"]
     Command["Immutable response command"]
+    Arbiter["Cross-mode priority arbiter"]
     Pipeline["Single response pipeline"]
     Recovery["Sustained-low recovery"]
-    Maintenance["Reconciliation / retries / retention"]
+    Maintenance["Reconciliation / tier outbox / retries / retention"]
+    Supervisor["Independent dependency supervisor"]
     Adapter["Single dry-run-aware ASG adapter"]
     Feedback["Formula-versioned evaluator"]
     API["Bounded operator API"]
   end
   DB[("PostgreSQL 16")]
-  AWS["AWS CloudWatch / ASG"]
+  AWS["Workload-region CPU/SQS + us-east-1 CloudFront / ASG"]
+  Session["Optional HTTP session signal"]
   Locust --> Commerce
   Locust -->|"authenticated test signals + run lifecycle"| Agent
   Commerce --> Metrics --> Collector
+  AWS -. "optional signals" .-> Collector
+  Session -. "optional signal" .-> Collector
   Collector --> Realtime --> Command
   DB --> Scheduled --> Command
-  Command --> Pipeline
+  Command --> Arbiter --> Pipeline
   Pipeline --> Adapter
   Pipeline -->|"authenticated enumerated tier"| Tier
   Pipeline --> DB
@@ -40,6 +45,9 @@ flowchart TB
   Recovery --> Pipeline
   Maintenance --> Pipeline
   Maintenance --> DB
+  Supervisor --> Realtime
+  Supervisor --> Scheduled
+  Supervisor --> Maintenance
   DB --> Feedback --> DB
   Browser --> API --> DB
 ```
@@ -116,6 +124,9 @@ outbox; bounded retry rows remain useful for scheduled backoff but are not the s
   present on the capacity claim and maintenance resumes it with the same correlation. A separate
   bounded retry row supplies backoff when it is available.
 - Optional signal failure: visible provider health and lower confidence; origin processing continues.
+- Dependency construction failure: the supervisor closes the failed dependency generation, retries
+  independently, and restores workers without restarting the process; health remains 503 while any
+  mandatory worker is absent or stopped.
 - Agent failure: the protected app continues serving its last durable tier; checkout stays normal.
 
 ## Deployment boundaries

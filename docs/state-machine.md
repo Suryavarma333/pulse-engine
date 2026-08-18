@@ -46,27 +46,32 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
   participant Detector as Scheduled or real-time detector
+  participant Arbiter as Priority arbiter
   participant DB as PostgreSQL
   participant Pipe as Response pipeline
   participant ASG as ASG adapter
   participant App as Protected app
   Detector->>DB: persist prediction + points
-  Detector->>Pipe: immutable ResponseCommand
-  Pipe->>Pipe: validate target, UTC, tier, recovery
-  Pipe->>Pipe: effective ceiling = min(global, command/event)
-  Pipe->>DB: claim stable idempotency key as planned
+  Detector->>Arbiter: immutable ResponseCommand + intent
+  Arbiter->>ASG: refresh authoritative desired/in-service
+  Arbiter->>DB: load active mode/event requirements
+  Arbiter->>Arbiter: protection outranks hold and recovery, then merge maxima
+  Arbiter->>Pipe: serialized effective command
+  Pipe->>Pipe: validate target, UTC, tier, recovery, ceiling
+  Pipe->>DB: atomically claim action + tier outbox
   alt duplicate command
     DB-->>Pipe: existing action
     Pipe-->>Detector: duplicate result; no external call
   else new command
-    Pipe->>ASG: execute already-clamped capacity
+    Pipe->>ASG: execute capacity with intent-aware cooldown
     Note over ASG: dry_run never initializes/calls boto3
     ASG-->>Pipe: dry-run/noop/capped/succeeded/failed
-    Pipe->>DB: record provider outcome and cooldown
-    opt safe tier change
+    Pipe->>DB: record outcome; retain pending tier stage
+    opt pending safe tier stage
       Pipe->>App: authenticated enumerated tier
       App->>DB: persist transition/interval first
       App-->>Pipe: activate and return policy
+      Pipe->>DB: mark tier delivered or retain bounded retry
     end
   end
 ```
@@ -90,15 +95,18 @@ latest due target. Cancellation never causes an immediate drop; it hands off to 
 
 ## Recovery and failure safety
 
-Recovery starts only after the exact sustained-low confirmation count. A successful step cannot
+Recovery uses its own persisted decision snapshot and starts only after the exact sustained-low
+confirmation count. A successful step cannot
 decrease capacity by more than `PULSE_RECOVERY_DECREMENT_STEP`, below the configured floor, or
 above any command ceiling; it lowers at most one protection tier. Cooldown rejects repeat
 reductions. Renewed high load immediately returns to `PROTECT`.
 
 Unknown actions—such as a provider response followed by a database-write failure—block scale-in.
 The reconciliation worker uses a read-only capacity observation to mark the action reconciled or
-retain it unknown. The maintenance worker leaves `FAILURE_SAFE` only after PostgreSQL, capacity
-provider state, and the authoritative demo control health all succeed; it then resumes WATCH,
-PROTECT, or RECOVERY from observed state. Retryable dispatch/tier failures retain their original
-correlation in a bounded durable retry queue. Sensitive provider text is sanitized before
-audit/status output.
+retain it unknown. The maintenance worker reconciles unknown provider outcomes, resumes pending tier
+outboxes, executes bounded retries, applies shared recovery, and prunes expired raw snapshots in
+bounded batches. An independent dependency supervisor recreates failed database/client dependencies
+and mandatory workers in-process. Health remains unavailable whenever a required task is absent or
+stopped; after dependency recovery the observed state resumes as WATCH, PROTECT, or RECOVERY.
+Retryable tier failures retain the original correlation and response command. Sensitive provider text
+is sanitized before audit/status output.
