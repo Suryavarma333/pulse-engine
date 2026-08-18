@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Protocol
-from uuid import uuid4
+from datetime import datetime, timedelta
+from typing import Any, Protocol
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from agent.app.services.ramp_planner import RampPlan
 from common.contracts import RecoveryPlan, ResponseCommand, SurgePredictionCandidate
 from common.enums import PredictionMode, SheddingLevel
 from db.models import SurgePrediction, SurgePredictionPoint
@@ -16,6 +17,14 @@ class PredictionWriter(Protocol):
         prediction: SurgePrediction,
         points: list[SurgePredictionPoint],
     ) -> SurgePrediction: ...
+
+    async def latest_for_scheduled_event(
+        self, scheduled_event_id: UUID
+    ) -> SurgePrediction | None: ...
+
+    async def get_with_points(
+        self, prediction_id: UUID, *, point_limit: int = 1_000
+    ) -> tuple[SurgePrediction | None, list[SurgePredictionPoint]]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +135,111 @@ class PredictionService:
             prediction=persisted,
             points=tuple(points),
             command=command,
+        )
+
+    async def ensure_scheduled(
+        self,
+        event: Any,
+        *,
+        plan: RampPlan,
+        demo_run_id: UUID | None,
+        environment: str,
+        created_at: datetime,
+    ) -> PersistedPrediction:
+        existing = await self._writer.latest_for_scheduled_event(event.id)
+        if existing is not None:
+            _, points = await self._writer.get_with_points(existing.id)
+            return PersistedPrediction(
+                prediction=existing,
+                points=tuple(points),
+                command=self._scheduled_template(
+                    existing,
+                    event=event,
+                    plan=plan,
+                    demo_run_id=demo_run_id,
+                ),
+            )
+        correlation_id = uuid5(NAMESPACE_URL, f"pulse-scheduled:{event.id}")
+        prediction_id = uuid4()
+        baseline = float(event.baseline_rps or 0)
+        peak = float(event.expected_peak_rps or baseline * float(event.expected_multiplier))
+        prediction = SurgePrediction(
+            id=prediction_id,
+            mode=PredictionMode.SCHEDULED.value,
+            demo_run_id=demo_run_id,
+            environment=environment,
+            correlation_id=correlation_id,
+            scheduled_event_id=event.id,
+            model_name="scheduled-ramp",
+            model_version="v1",
+            created_at=created_at,
+            basis_window_start=min(created_at, plan.points[0].due_at) - timedelta(microseconds=1),
+            basis_window_end=created_at,
+            predicted_start_at=plan.points[0].due_at,
+            predicted_peak_at=plan.points[-1].due_at,
+            predicted_end_at=event.ends_at,
+            baseline_rps=baseline,
+            predicted_peak_rps=max(peak, baseline),
+            predicted_multiplier=float(event.expected_multiplier),
+            recommended_capacity=plan.points[-1].desired_capacity,
+            confidence=float(event.confidence),
+            trigger_type="scheduled_event",
+            reasoning=f"Scheduled prewarm forecast for {event.name}",
+            signal_evidence={
+                "scheduled_event_id": str(event.id),
+                "event_timezone": event.timezone,
+                "event_starts_at": event.starts_at.isoformat(),
+                "event_effective_ceiling": plan.effective_ceiling,
+            },
+            status="active",
+            formula_version="v1",
+        )
+        points = [
+            SurgePredictionPoint(
+                prediction_id=prediction_id,
+                point_at=point.due_at,
+                predicted_rps=(
+                    peak * point.desired_capacity / max(plan.points[-1].desired_capacity, 1)
+                ),
+                predicted_capacity=point.desired_capacity,
+            )
+            for point in plan.points
+        ]
+        persisted = await self._writer.create_with_points(prediction, points)
+        return PersistedPrediction(
+            prediction=persisted,
+            points=tuple(points),
+            command=self._scheduled_template(
+                persisted,
+                event=event,
+                plan=plan,
+                demo_run_id=demo_run_id,
+            ),
+        )
+
+    def _scheduled_template(
+        self,
+        prediction: SurgePrediction,
+        *,
+        event: Any,
+        plan: RampPlan,
+        demo_run_id: UUID | None,
+    ) -> ResponseCommand:
+        return ResponseCommand(
+            command_id=uuid5(NAMESPACE_URL, f"pulse-scheduled-template:{event.id}"),
+            idempotency_key=f"scheduled:{event.id}:prediction",
+            correlation_id=prediction.correlation_id,
+            demo_run_id=demo_run_id,
+            prediction_id=prediction.id,
+            scheduled_event_id=event.id,
+            mode=PredictionMode.SCHEDULED,
+            target_resource=self._target_resource,
+            requested_desired_capacity=plan.points[-1].desired_capacity,
+            maximum_ceiling=plan.effective_ceiling,
+            reason_code="scheduled_event_prediction",
+            reasoning=f"Scheduled forecast for {event.name}",
+            signal_evidence=prediction.signal_evidence,
+            recovery_plan=self._recovery_plan,
         )
 
 

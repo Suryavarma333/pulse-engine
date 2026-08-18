@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -122,3 +123,63 @@ class PredictionRepository:
             )
             points = list((await session.scalars(statement)).all())
         return prediction, points
+
+    async def latest_for_scheduled_event(
+        self, scheduled_event_id: UUID
+    ) -> SurgePrediction | None:
+        statement = (
+            select(SurgePrediction)
+            .where(
+                SurgePrediction.scheduled_event_id == scheduled_event_id,
+                SurgePrediction.mode == "scheduled",
+                SurgePrediction.status.in_(["active", "evaluating", "completed"]),
+            )
+            .order_by(SurgePrediction.created_at.desc(), SurgePrediction.id.desc())
+            .limit(1)
+        )
+        async with self._session_factory() as session:
+            return await session.scalar(statement)
+
+    async def update_evaluation(
+        self,
+        *,
+        prediction_id: UUID,
+        actual_start_at: datetime | None,
+        actual_peak_at: datetime | None,
+        actual_peak_rps: float | None,
+        detection_lead_seconds: float | None,
+        prediction_error_pct: float | None,
+        overprovisioned_instance_minutes: float | None,
+        underprovisioned_seconds: float | None,
+    ) -> SurgePrediction:
+        if actual_start_at is not None:
+            actual_start_at = ensure_utc(actual_start_at, field_name="actual_start_at")
+        if actual_peak_at is not None:
+            actual_peak_at = ensure_utc(actual_peak_at, field_name="actual_peak_at")
+        if actual_peak_rps is not None and actual_peak_rps < 0:
+            raise ValueError("actual_peak_rps must be nonnegative")
+        async with self._session_factory() as session, session.begin():
+            prediction = await session.scalar(
+                select(SurgePrediction)
+                .where(SurgePrediction.id == prediction_id)
+                .with_for_update()
+            )
+            if prediction is None:
+                raise LookupError(f"prediction {prediction_id} was not found")
+            prediction.actual_start_at = actual_start_at
+            prediction.actual_peak_at = actual_peak_at
+            prediction.actual_peak_rps = actual_peak_rps
+            prediction.detection_lead_seconds = (
+                None if detection_lead_seconds is None else round(detection_lead_seconds)
+            )
+            prediction.prediction_error_pct = prediction_error_pct
+            prediction.overprovisioned_instance_minutes = (
+                overprovisioned_instance_minutes
+            )
+            prediction.underprovisioned_seconds = (
+                None if underprovisioned_seconds is None else round(underprovisioned_seconds)
+            )
+            prediction.status = "completed"
+            prediction.evaluated_at = datetime.now(UTC)
+            await session.flush()
+            return prediction

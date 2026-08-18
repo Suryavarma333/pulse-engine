@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -72,3 +72,39 @@ class ScheduledEventRepository:
             statement = statement.with_for_update(skip_locked=True)
         async with self._session_factory() as session, session.begin():
             return list((await session.scalars(statement)).all())
+
+    async def list_actionable(
+        self,
+        *,
+        now: datetime,
+        lookahead_seconds: int,
+        recovery_lookbehind_seconds: int = 86_400,
+        statuses: tuple[str, ...] = ("active", "cancelled"),
+        limit: int = 200,
+    ) -> list[ScheduledEvent]:
+        now = ensure_utc(now, field_name="now")
+        if not 60 <= lookahead_seconds <= 604_800:
+            raise ValueError("lookahead_seconds must be between 60 and 604800")
+        if not 0 <= recovery_lookbehind_seconds <= 604_800:
+            raise ValueError("recovery lookbehind is out of bounds")
+        if not statuses:
+            raise ValueError("at least one event status is required")
+        horizon_end = now + timedelta(seconds=lookahead_seconds)
+        history_start = now - timedelta(seconds=recovery_lookbehind_seconds)
+        statement = (
+            select(ScheduledEvent)
+            .where(
+                ScheduledEvent.status.in_(statuses),
+                ScheduledEvent.starts_at <= horizon_end,
+                ScheduledEvent.ends_at >= history_start,
+            )
+            .order_by(ScheduledEvent.starts_at.asc(), ScheduledEvent.id.asc())
+            .limit(bounded_limit(limit, self._limits.max_rows))
+        )
+        async with self._session_factory() as session:
+            rows = list((await session.scalars(statement)).all())
+        return [
+            event
+            for event in rows
+            if event.starts_at - timedelta(seconds=event.prewarm_lead_seconds) <= horizon_end
+        ]

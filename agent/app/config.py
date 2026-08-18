@@ -64,6 +64,13 @@ class AgentSettings(BaseModel):
     reactive_load_threshold_rps: float = Field(default=50.0, gt=0)
     forecast_horizon_seconds: int = Field(default=30, ge=1, le=3_600)
     rps_per_instance: float = Field(default=25.0, gt=0)
+    scheduled_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    scheduled_lookahead_seconds: int = Field(default=86_400, ge=60, le=604_800)
+    scheduled_ramp_steps: int = Field(default=4, ge=2, le=100)
+    near_event_protection_seconds: int = Field(default=300, ge=0, le=86_400)
+    feedback_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    feedback_horizon_seconds: int = Field(default=30, ge=0, le=86_400)
+    status_capacity_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
 
     @model_validator(mode="after")
     def validate_safety_bounds(self) -> Self:
@@ -130,6 +137,13 @@ class AgentSettings(BaseModel):
             "PULSE_REACTIVE_LOAD_THRESHOLD_RPS": "reactive_load_threshold_rps",
             "PULSE_FORECAST_HORIZON_SECONDS": "forecast_horizon_seconds",
             "PULSE_RPS_PER_INSTANCE": "rps_per_instance",
+            "PULSE_SCHEDULED_POLL_SECONDS": "scheduled_poll_seconds",
+            "PULSE_SCHEDULED_LOOKAHEAD_SECONDS": "scheduled_lookahead_seconds",
+            "PULSE_SCHEDULED_RAMP_STEPS": "scheduled_ramp_steps",
+            "PULSE_NEAR_EVENT_PROTECTION_SECONDS": "near_event_protection_seconds",
+            "PULSE_FEEDBACK_POLL_SECONDS": "feedback_poll_seconds",
+            "PULSE_FEEDBACK_HORIZON_SECONDS": "feedback_horizon_seconds",
+            "PULSE_STATUS_CAPACITY_TIMEOUT_SECONDS": "status_capacity_timeout_seconds",
         }
         payload = {field: values[key] for key, field in field_map.items() if key in values}
         return cls.model_validate(payload)

@@ -5,9 +5,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, FastAPI, Header, Request, status
+from fastapi import APIRouter, FastAPI, Header, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 
 from agent.app.metrics.providers.simulated import (
     DuplicateSignalError,
@@ -16,9 +16,10 @@ from agent.app.metrics.providers.simulated import (
     SimulatedSignalBuffer,
     SimulatedSignalFrame,
 )
-from common.contracts import ContractModel
-from common.enums import ProviderStatus
-from common.time import Clock, SystemClock
+from common.contracts import ContractModel, DemoRunSpec, validate_evidence
+from common.enums import DemoRunStatus, ExecutionMode, PredictionMode, ProviderStatus
+from common.time import Clock, SystemClock, ensure_utc
+from db.repositories.demo_runs import IdempotencyConflict
 
 router = APIRouter(prefix="/internal", tags=["internal-signals"])
 
@@ -42,6 +43,56 @@ class SimulatedSignalResponse(ContractModel):
     expires_at: datetime
     accepted_values: dict[str, float]
     provider_status: ProviderStatus
+
+
+class DemoRunStartRequest(ContractModel):
+    scenario_name: str = Field(min_length=1, max_length=120)
+    mode: PredictionMode
+    environment: str = Field(min_length=1, max_length=32)
+    baseline_type: str = Field(min_length=1, max_length=40)
+    execution_mode: ExecutionMode
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    thresholds: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    idempotency_key: str = Field(min_length=1, max_length=160)
+
+    @field_validator("started_at")
+    @classmethod
+    def started_at_is_utc(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
+
+    @field_validator("configuration", "thresholds")
+    @classmethod
+    def evidence_is_safe(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_evidence(value)
+
+
+class DemoRunCompletionRequest(ContractModel):
+    status: DemoRunStatus
+    ended_at: datetime
+    locust_summary: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("ended_at")
+    @classmethod
+    def ended_at_is_utc(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    @field_validator("status")
+    @classmethod
+    def status_is_terminal(cls, value: DemoRunStatus) -> DemoRunStatus:
+        if value not in {
+            DemoRunStatus.COMPLETED,
+            DemoRunStatus.FAILED,
+            DemoRunStatus.CANCELLED,
+        }:
+            raise ValueError("status must be completed, failed, or cancelled")
+        return value
+
+    @field_validator("locust_summary")
+    @classmethod
+    def summary_is_safe(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_evidence(value)
 
 
 def _error(status_code: int, code: str, detail: str) -> JSONResponse:
@@ -110,6 +161,122 @@ async def ingest_simulated_signal(
     )
 
 
+@router.post("/demo-runs", response_model=None)
+async def start_demo_run(
+    payload: DemoRunStartRequest,
+    request: Request,
+    response: Response,
+    control_token: str | None = Header(default=None, alias="X-Pulse-Control-Token"),
+) -> dict[str, Any] | JSONResponse:
+    if control_token is None or not _tokens_match(control_token, _expected_token(request)):
+        return _error(
+            status.HTTP_401_UNAUTHORIZED, "INVALID_CONTROL_TOKEN", "Invalid control token"
+        )
+    started_at = payload.started_at or request.app.state.clock.now()
+    spec = DemoRunSpec(
+        idempotency_key=payload.idempotency_key,
+        scenario_name=payload.scenario_name,
+        mode=payload.mode,
+        environment=payload.environment,
+        baseline_type=payload.baseline_type,
+        execution_mode=payload.execution_mode,
+        configuration=payload.configuration,
+        thresholds=payload.thresholds,
+        started_at=started_at,
+    )
+    try:
+        run, created = await request.app.state.demo_runs.start(spec)
+    except IdempotencyConflict as exc:
+        return _error(status.HTTP_409_CONFLICT, "IDEMPOTENCY_CONFLICT", str(exc))
+    except Exception as exc:
+        code = "ACTIVE_RUN_CONFLICT" if _is_integrity_error(exc) else "RUN_PERSISTENCE_UNAVAILABLE"
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if code == "ACTIVE_RUN_CONFLICT"
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+        return _error(status_code, code, "Unable to start demo run")
+    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    return _run_response(run)
+
+
+@router.patch("/demo-runs/{run_id}", response_model=None)
+async def complete_demo_run(
+    run_id: UUID,
+    payload: DemoRunCompletionRequest,
+    request: Request,
+    control_token: str | None = Header(default=None, alias="X-Pulse-Control-Token"),
+) -> dict[str, Any] | JSONResponse:
+    if control_token is None or not _tokens_match(control_token, _expected_token(request)):
+        return _error(
+            status.HTTP_401_UNAUTHORIZED, "INVALID_CONTROL_TOKEN", "Invalid control token"
+        )
+    run = await request.app.state.demo_runs.get(run_id)
+    if run is None:
+        return _error(status.HTTP_404_NOT_FOUND, "RUN_NOT_FOUND", "Demo run was not found")
+    if (
+        run.status == payload.status.value
+        and run.ended_at == payload.ended_at
+        and run.locust_summary == payload.locust_summary
+        and run.notes == payload.notes
+    ):
+        return _run_response(run)
+    target = (
+        DemoRunStatus.PENDING_EVALUATION
+        if payload.status is DemoRunStatus.COMPLETED
+        else payload.status
+    )
+    try:
+        run = await request.app.state.demo_runs.complete(
+            run_id=run_id,
+            status=target,
+            ended_at=payload.ended_at,
+            locust_summary=payload.locust_summary,
+            notes=payload.notes,
+        )
+        if (
+            payload.status is DemoRunStatus.COMPLETED
+            and (
+                request.app.state.clock.now() - payload.ended_at
+            ).total_seconds() >= request.app.state.settings.feedback_horizon_seconds
+        ):
+            run = await request.app.state.feedback_service.evaluate_run(run_id)
+    except IdempotencyConflict as exc:
+        return _error(status.HTTP_409_CONFLICT, "RUN_COMPLETION_CONFLICT", str(exc))
+    except LookupError:
+        return _error(status.HTTP_404_NOT_FOUND, "RUN_NOT_FOUND", "Demo run was not found")
+    except ValueError as exc:
+        return _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "INVALID_RUN_COMPLETION", str(exc))
+    except Exception:
+        return _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "RUN_EVALUATION_UNAVAILABLE",
+            "Unable to persist or evaluate demo run",
+        )
+    return _run_response(run)
+
+
+def _run_response(run: Any) -> dict[str, Any]:
+    return {
+        "id": str(run.id),
+        "scenario_name": run.scenario_name,
+        "mode": run.mode,
+        "environment": run.environment,
+        "baseline_type": run.baseline_type,
+        "execution_mode": run.execution_mode,
+        "status": run.status,
+        "started_at": ensure_utc(run.started_at).isoformat(),
+        "ended_at": None if run.ended_at is None else ensure_utc(run.ended_at).isoformat(),
+        "formula_version": run.formula_version,
+        "warnings": run.warnings,
+        "results": run.result_summary,
+    }
+
+
+def _is_integrity_error(exc: Exception) -> bool:
+    return type(exc).__name__ == "IntegrityError"
+
+
 def create_simulated_signal_app(
     *,
     buffer: SimulatedSignalBuffer,
@@ -124,6 +291,7 @@ def create_simulated_signal_app(
     app.state.control_token = control_token
     app.state.clock = clock or SystemClock()
     app.state.worker_available = worker_available
+    app.state.demo_runs = None
     app.include_router(router)
     return app
 
@@ -131,7 +299,11 @@ def create_simulated_signal_app(
 __all__ = [
     "SimulatedSignalRequest",
     "SimulatedSignalResponse",
+    "DemoRunCompletionRequest",
+    "DemoRunStartRequest",
+    "complete_demo_run",
     "create_simulated_signal_app",
     "ingest_simulated_signal",
     "router",
+    "start_demo_run",
 ]

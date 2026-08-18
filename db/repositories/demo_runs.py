@@ -78,6 +78,7 @@ class DemoRunRepository:
         locust_summary: dict,
         notes: str | None = None,
         results: ResultMetrics | None = None,
+        result_summary: dict | None = None,
     ) -> DemoRun:
         if status not in {
             DemoRunStatus.PENDING_EVALUATION,
@@ -100,7 +101,12 @@ class DemoRunRepository:
                 DemoRunStatus.RUNNING.value,
                 DemoRunStatus.PENDING_EVALUATION.value,
             }:
-                if run.status == status.value and run.ended_at == ended_at:
+                if (
+                    run.status == status.value
+                    and run.ended_at == ended_at
+                    and run.locust_summary == locust_summary
+                    and run.notes == notes
+                ):
                     return run
                 raise IdempotencyConflict("demo run already has a different terminal state")
             run.status = status.value
@@ -116,13 +122,54 @@ class DemoRunRepository:
                 run.prediction_error_pct = results.prediction_error_pct
                 run.overprovisioned_instance_minutes = results.overprovisioned_instance_minutes
                 run.underprovisioned_seconds = results.underprovisioned_seconds
+                run.error_rate = results.error_rate
                 run.recovery_duration_seconds = results.recovery_duration_seconds
                 run.cost_duration_seconds = results.cost_duration_seconds
                 run.formula_version = results.formula_version
-                run.result_summary = result_values
+                run.result_summary = validate_evidence(result_summary or result_values)
                 run.warnings = {"items": list(results.warnings)}
+            elif result_summary is not None:
+                run.result_summary = validate_evidence(result_summary)
+            elif status in {DemoRunStatus.FAILED, DemoRunStatus.CANCELLED}:
+                warning = f"run_{status.value}"
+                run.result_summary = validate_evidence(
+                    {
+                        "formula_version": run.formula_version,
+                        "raw": {"locust_summary": locust_summary},
+                        "references": {"run_id": str(run.id)},
+                        "warnings": [warning],
+                    }
+                )
+                run.warnings = {"items": [warning]}
             await session.flush()
             return run
+
+    async def get(self, run_id: UUID) -> DemoRun | None:
+        async with self._session_factory() as session:
+            return await session.get(DemoRun, run_id)
+
+    async def current_demo_run_id(self, *, environment: str | None = None) -> UUID | None:
+        statement = (
+            select(DemoRun.id)
+            .where(DemoRun.status == DemoRunStatus.RUNNING.value)
+            .order_by(DemoRun.started_at.desc(), DemoRun.id.desc())
+            .limit(1)
+        )
+        if environment is not None:
+            statement = statement.where(DemoRun.environment == environment)
+        async with self._session_factory() as session:
+            return await session.scalar(statement)
+
+    async def list_pending_evaluation(self, *, limit: int = 50) -> list[DemoRun]:
+        limit = min(max(limit, 1), self._limits.max_rows)
+        statement = (
+            select(DemoRun)
+            .where(DemoRun.status == DemoRunStatus.PENDING_EVALUATION.value)
+            .order_by(DemoRun.ended_at.asc(), DemoRun.id.asc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            return list((await session.scalars(statement)).all())
 
     async def list_bounded(
         self,

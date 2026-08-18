@@ -120,6 +120,7 @@ class AutoScalingCapacityAdapter:
                 status = ActionStatus.NOOP
             else:
                 status = ActionStatus.DRY_RUN
+            self._simulated_capacity = target
             return CapacityDecision(
                 requested=requested_capacity,
                 applied=target,

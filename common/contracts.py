@@ -251,6 +251,7 @@ class ResultMetrics(ContractModel):
     prediction_error_pct: float | None = Field(default=None, ge=0)
     overprovisioned_instance_minutes: float | None = Field(default=None, ge=0)
     underprovisioned_seconds: float | None = Field(default=None, ge=0)
+    error_rate: float | None = Field(default=None, ge=0, le=1)
     recovery_duration_seconds: float | None = Field(default=None, ge=0)
     cost_duration_seconds: float | None = Field(default=None, ge=0)
     formula_version: str = Field(default="v1", min_length=1, max_length=20)
