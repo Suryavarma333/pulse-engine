@@ -8,62 +8,105 @@ alwaysApply: false
 
 ```yaml
 architecture:
-  summary: Pulse is a portfolio-grade predictive traffic-surge platform. The current repository contains a FastAPI protected commerce application with tiered reversible load shedding, a rolling traffic-metrics collector, and a PostgreSQL audit and forecasting schema. The full delivery extends this foundation with scheduled and real-time surge agents, safe AWS Auto Scaling control, load tests, a dashboard, and Terraform.
+  summary: Pulse is a complete local-first predictive traffic-surge platform for a protected commerce workload. A FastAPI agent combines scheduled prewarming and real-time acceleration/leading-signal detection, serializes both through one audited priority arbiter and response pipeline, manages gradual recovery and durable reconciliation, and optionally executes bounded AWS Auto Scaling changes. A second FastAPI service owns reversible load shedding while keeping checkout normal, PostgreSQL stores control/evidence state, Locust drives deterministic scenarios, and a read-only Next.js dashboard consumes versioned operator APIs.
 
-  style: modular-monolith
+  style: multi-service-monorepo
 
   layers:
     - name: http
       paths:
+        - agent/app/main.py
+        - agent/app/api
         - demo_app/app/main.py
         - demo_app/app/routes
         - demo_app/app/schemas.py
+        - dashboard/app
+        - dashboard/components
+        - dashboard/lib
     - name: business
       paths:
+        - agent/app/detection
+        - agent/app/orchestration
+        - agent/app/services
+        - agent/app/workers
         - demo_app/app/shedding
         - demo_app/app/metrics.py
         - common
+        - load_tests/scenarios
+        - load_tests/scripts
     - name: infrastructure
       paths:
-        - db
+        - agent/app/aws
+        - agent/app/metrics/providers
+        - agent/app/runtime.py
+        - db/models
+        - db/repositories
+        - db/migrations
+        - db/session.py
+        - infra
+        - scripts
+        - agent/Dockerfile
         - demo_app/Dockerfile
+        - dashboard/Dockerfile
         - docker-compose.yml
 
   boundaries:
-    - HTTP routes read load-shedding state through the controller rather than manipulating persistence directly
-    - Critical endpoint policy is centralized and asserts checkout remains normal at every tier
-    - Database access is isolated behind asynchronous session and store abstractions
-    - Flexible evidence is stored as JSONB while dashboard and evaluation fields remain typed columns
-    - AWS mutating operations must be isolated behind one dry-run-aware adapter with capacity ceilings and idempotency
+    - The demo application is authoritative for endpoint policy; the agent changes tiers only through the authenticated HTTP boundary
+    - Critical endpoint policy is centralized and checkout bypasses every limiter, cache fallback, disable rule, and protection tier
+    - Scheduled and real-time commands share one cross-mode priority arbiter, response pipeline, state machine, recovery policy, and ASG adapter
+    - Capacity and tier intent is claimed durably before mutation; an atomic tier outbox, bounded retry queue, and reconciliation resume incomplete work without repeating capacity
+    - Database access is isolated behind asynchronous repositories and session factories; mandatory DB or worker failure degrades readiness to 503 while polling tasks remain alive and recover in process
+    - Flexible bounded evidence is JSONB, while dashboard, evaluation, capacity, state, idempotency, and lifecycle fields remain typed columns
+    - The browser performs bounded credential-free GET polling and consumes explicit pulse.snapshot.v1 DTOs; it never receives the control token
+    - Dry-run constructs no AWS clients; live SetDesiredCapacity is target-scoped, double-clamped, idempotent, and direction/intent aware
+    - Recovery is the only decrease path, requires distinct sustained-low evidence, applies one bounded step, and retains provider cooldown while protective scale-out bypasses it
+    - Collection buffers, API windows/pages, retries, reconciliation, retention, evidence, and logs are bounded
 
   integrations:
-    - PostgreSQL 16 for traffic, prediction, scaling, scheduled-event, and shedding audit data
-    - Docker Compose for local service orchestration
-    - GitHub for source control and pull-request delivery
-    - AWS Auto Scaling, CloudWatch, CloudFront, and SQS are required target integrations but are not implemented in the current baseline
+    - PostgreSQL 16 for snapshots, predictions/points, scaling actions and tier outbox, retries, scheduled events, demo runs, and shedding intervals
+    - Protected demo-app HTTP metrics and authenticated load-shedding control APIs
+    - Optional CloudWatch regional ASG CPU and us-east-1 CloudFront request signals
+    - Optional SQS queue-depth and HTTP session/login leading signals
+    - AWS Auto Scaling read/SetDesiredCapacity through one bounded boto3 adapter
+    - Docker Compose for PostgreSQL migration, demo app, agent/workers, dashboard, and Locust orchestration
+    - Next.js dashboard for read-only status/history/results visualization
+    - GitHub Actions for Python/PostgreSQL/dashboard/Compose/Locust/Terraform/secret delivery verification
+    - Terraform for an optional IMDSv2 launch template, bounded ASG, CloudWatch comparator alarm, and least-privilege runtime role
 
   auth:
     userFacingPattern: The demo commerce endpoints are intentionally unauthenticated for local load testing
-    partnerPattern: Internal load-shedding control requires the X-Pulse-Control-Token header and constant-time comparison
+    partnerPattern: Agent simulated-signal/demo-run mutations and demo-app load-shedding control require X-Pulse-Control-Token with constant-time comparison; operator/dashboard reads are intentionally credential-free for trusted local or network-restricted use
     configPaths:
       - .env.example
+      - agent/app/config.py
+      - agent/app/api/internal.py
       - demo_app/app/config.py
+      - demo_app/app/routes/operations.py
 
   errorHandling:
-    businessException: FastAPI validation and HTTPException responses at the HTTP boundary; persistence failures prevent unaudited shedding transitions
+    businessException: FastAPI emits structured error codes for validation/query/control failures; provider text is sanitized, persistence failure prevents unaudited mutation, and dependency/worker degradation is exposed as health 503 while bounded loops retry
     codes:
       - HTTP 401 for invalid internal control token
+      - HTTP 404 for missing run/prediction results
+      - HTTP 409 for idempotency, active-run, or authoritative tier conflicts
       - HTTP 422 for invalid request payloads
       - HTTP 429 for intentionally rate-limited non-critical traffic
-      - HTTP 500 for unexpected failures counted by traffic metrics
+      - HTTP 500 for sanitized bounded operator query failures or unexpected demo failures counted by traffic metrics
+      - HTTP 503 for persistence, dependency, mandatory worker, or demo-control unavailability
+      - UNKNOWN action status for ambiguous provider outcomes pending reconciliation
 
   diagrams:
-    existing: []
+    existing:
+      - README.md architecture overview
+      - docs/architecture.md runtime, data, persistence, and failure boundaries
+      - docs/state-machine.md executable control-state and response sequence
     preferredFormat: mermaid
 
   repositoryRelationships:
     - primary: Suryavarma333/pulse-engine
       consumes:
-        - PostgreSQL
-        - AWS control-plane APIs in the target architecture
+        - PostgreSQL 16
+        - protected demo-app HTTP APIs
+        - AWS Auto Scaling and CloudWatch when live mode is explicitly enabled
+        - optional CloudFront, SQS, and session-signal sources
 ```
