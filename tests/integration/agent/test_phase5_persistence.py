@@ -141,7 +141,7 @@ async def _exercise(database_url: str) -> None:
                 reasoning="integration",
                 signal_evidence={},
                 status="active",
-                reactive_comparator_crossed_at=NOW + timedelta(seconds=90),
+                reactive_comparator_crossed_at=None,
                 formula_version="v1",
             ),
             [
@@ -152,6 +152,30 @@ async def _exercise(database_url: str) -> None:
                     predicted_capacity=3,
                 )
             ],
+        )
+        comparator_at = NOW + timedelta(seconds=90)
+        recorded_prediction = await predictions.record_reactive_comparator(
+            environment="local",
+            demo_run_id=run.id,
+            crossed_at=comparator_at,
+        )
+        recorded_run = await runs.record_reactive_comparator(
+            run_id=run.id,
+            crossed_at=comparator_at,
+        )
+        assert recorded_prediction is not None
+        assert recorded_prediction.reactive_comparator_crossed_at == comparator_at
+        assert recorded_run is not None
+        assert recorded_run.reactive_comparator_crossed_at == comparator_at
+
+        await predictions.record_reactive_comparator(
+            environment="local",
+            demo_run_id=run.id,
+            crossed_at=NOW + timedelta(seconds=120),
+        )
+        await runs.record_reactive_comparator(
+            run_id=run.id,
+            crossed_at=NOW + timedelta(seconds=120),
         )
         window = QueryWindow(
             start=NOW - timedelta(minutes=1),

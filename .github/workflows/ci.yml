@@ -1,0 +1,155 @@
+name: Pulse delivery verification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - complete-predictive-surge-platform
+  workflow_dispatch:
+
+concurrency:
+  group: pulse-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  python-quality:
+    name: Python compile, Ruff, tests, and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -e '.[dev,load]'
+      - name: Compile Python
+        run: python -m compileall -q common db demo_app agent load_tests scripts tests
+      - name: Lint
+        run: ruff check .
+      - name: Test with coverage gate
+        run: >-
+          pytest -q
+          --cov=common --cov=db --cov=demo_app --cov=agent
+          --cov-report=term-missing --cov-fail-under=85
+
+  postgresql:
+    name: PostgreSQL 16 migration and repository cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: pulse_test
+          POSTGRES_USER: pulse
+          POSTGRES_PASSWORD: pulse-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pulse -d pulse_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PULSE_DATABASE_URL: postgresql+psycopg://pulse:pulse-ci-only@localhost:5432/pulse_test
+      PULSE_TEST_DATABASE_URL: postgresql+psycopg://pulse:pulse-ci-only@localhost:5432/pulse_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -e '.[dev]'
+      - name: Reversible live migration cycle
+        run: |
+          python -m alembic -c db/alembic.ini upgrade head
+          python -m alembic -c db/alembic.ini downgrade base
+          python -m alembic -c db/alembic.ini upgrade head
+      - name: PostgreSQL repository and control-plane integration
+        run: pytest -q tests/integration
+
+  dashboard:
+    name: Dashboard frozen install, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: Frozen dependency install
+        run: pnpm --dir dashboard install --frozen-lockfile
+      - name: Component and API tests
+        run: pnpm --dir dashboard test
+      - name: Production build
+        run: pnpm --dir dashboard build
+
+  compose-smoke:
+    name: Images, Compose, health, and bounded Locust smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Validate resolved Compose configuration
+        run: docker compose config --quiet
+      - name: Build and exercise the clean credential-free stack
+        env:
+          PULSE_CONTROL_TOKEN: pulse-ci-ephemeral-control-token
+          PULSE_SMOKE_PROJECT_NAME: pulse-ci-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/smoke_stack.sh
+
+  terraform:
+    name: Terraform format, initialization, validation, and policy assertions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Check formatting
+        run: terraform -chdir=infra fmt -check -recursive
+      - name: Initialize without backend
+        run: terraform -chdir=infra init -backend=false
+      - name: Validate configuration
+        run: terraform -chdir=infra validate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify cost and IAM safety assertions
+        run: python -m pytest -q tests/unit/infra
+
+  secret-safety:
+    name: Secret, generated-artifact, and delivery scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Scan tracked repository content
+        run: python scripts/secret_scan.py
+      - name: Reject whitespace and conflict markers
+        run: git diff --check "origin/${{ github.base_ref || 'codex/demo-app-foundation' }}...HEAD"

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
+
+import pytest
 
 from agent.app.services.predictions import PredictionService
 from agent.app.services.ramp_planner import RampPlanner
@@ -34,6 +37,40 @@ class Writer:
         return prediction
 
 
+def prediction_service(writer) -> PredictionService:
+    return PredictionService(
+        writer,
+        target_resource="pulse-asg",
+        maximum_ceiling=3,
+        recovery_plan=RecoveryPlan(
+            low_threshold_rps=2,
+            confirmation_count=2,
+            cooldown_seconds=30,
+            decrement_step=1,
+            capacity_floor=1,
+        ),
+    )
+
+
+def test_realtime_prediction_boundary_rejects_wrong_mode_and_snapshot_id() -> None:
+    service = prediction_service(Writer())
+
+    with pytest.raises(ValueError, match="real-time prediction"):
+        asyncio.run(
+            service.persist_realtime(
+                SimpleNamespace(mode=PredictionMode.SCHEDULED),
+                trigger_snapshot_id=1,
+            )
+        )
+    with pytest.raises(ValueError, match="snapshot_id must be positive"):
+        asyncio.run(
+            service.persist_realtime(
+                SimpleNamespace(mode=PredictionMode.REALTIME),
+                trigger_snapshot_id=0,
+            )
+        )
+
+
 def test_scheduled_prediction_and_points_are_persisted_once_and_reused() -> None:
     event = ScheduledEvent(
         id=uuid4(),
@@ -58,18 +95,7 @@ def test_scheduled_prediction_and_points_are_persisted_once_and_reused() -> None
     )
     plan = RampPlanner(global_ceiling=3).plan(event)
     writer = Writer()
-    service = PredictionService(
-        writer,
-        target_resource="pulse-asg",
-        maximum_ceiling=3,
-        recovery_plan=RecoveryPlan(
-            low_threshold_rps=2,
-            confirmation_count=2,
-            cooldown_seconds=30,
-            decrement_step=1,
-            capacity_floor=1,
-        ),
-    )
+    service = prediction_service(writer)
 
     first = asyncio.run(
         service.ensure_scheduled(

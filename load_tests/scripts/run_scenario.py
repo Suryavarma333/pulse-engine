@@ -143,6 +143,8 @@ def execute(
             time.sleep(1)
             detail = api.run_detail(run_id)
         export_evidence(detail, output_directory=output_directory, stem=stem)
+        if detail.get("status") == "pending_evaluation":
+            raise RuntimeError(f"Run evaluation timed out; run_id={run_id}")
         if signal_errors:
             raise RuntimeError(
                 f"Leading-signal publication failed; run_id={run_id}; "

@@ -160,6 +160,24 @@ class DemoRunRepository:
         async with self._session_factory() as session:
             return await session.scalar(statement)
 
+    async def record_reactive_comparator(
+        self,
+        *,
+        run_id: UUID,
+        crossed_at: datetime,
+    ) -> DemoRun | None:
+        crossed_at = ensure_utc(crossed_at, field_name="crossed_at")
+        async with self._session_factory() as session, session.begin():
+            run = await session.scalar(
+                select(DemoRun).where(DemoRun.id == run_id).with_for_update()
+            )
+            if run is None:
+                return None
+            if run.reactive_comparator_crossed_at is None:
+                run.reactive_comparator_crossed_at = crossed_at
+                await session.flush()
+            return run
+
     async def list_pending_evaluation(self, *, limit: int = 50) -> list[DemoRun]:
         limit = min(max(limit, 1), self._limits.max_rows)
         statement = (

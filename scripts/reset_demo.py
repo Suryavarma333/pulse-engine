@@ -5,7 +5,7 @@ import asyncio
 import os
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from common.enums import DemoRunStatus
 from db.models import DemoRun, ScheduledEvent
@@ -52,6 +52,23 @@ async def purge_generated_records(database_url: str, environment: str) -> tuple[
         await database.dispose()
 
 
+async def complete_generated_events(database_url: str) -> int:
+    database = Database(database_url)
+    try:
+        async with database.session_factory() as session, session.begin():
+            events = await session.execute(
+                update(ScheduledEvent)
+                .where(
+                    ScheduledEvent.source == "load_test",
+                    ScheduledEvent.status == "active",
+                )
+                .values(status="completed")
+            )
+            return events.rowcount or 0
+    finally:
+        await database.dispose()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Idempotently reset scoped Pulse demo state")
     parser.add_argument("--agent-url", default="http://localhost:8100")
@@ -70,6 +87,11 @@ def main() -> int:
         action="store_true",
         help="Delete only load-test scenario runs and source=load_test event seeds",
     )
+    parser.add_argument(
+        "--complete-generated-events",
+        action="store_true",
+        help="Stop only active source=load_test events from affecting the next scenario",
+    )
     args = parser.parse_args()
     with PulseApiClient(
         agent_url=args.agent_url,
@@ -87,6 +109,9 @@ def main() -> int:
             )
         tier = api.reset_tier(environment=args.environment)
     print(f"tier={tier['level']} changed={tier.get('changed', False)}")
+    if args.complete_generated_events:
+        event_count = asyncio.run(complete_generated_events(args.database_url))
+        print(f"completed generated scheduled_events={event_count}")
     if args.purge_generated:
         run_count, event_count = asyncio.run(
             purge_generated_records(args.database_url, args.environment)

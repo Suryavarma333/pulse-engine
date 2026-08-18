@@ -29,11 +29,12 @@ async def seed_diwali_event(
         raise ValueError("duration_seconds must be at least 10")
     starts_at = starts_at.astimezone(UTC)
     prewarm = 8 if smoke else 90
-    peak_lead = 2 if smoke else 15
+    peak_lead = 6 if smoke else 15
+    offsets = (-8, -7, -6) if smoke else (-90, -45, -15)
     points = [
-        {"offset_seconds": -prewarm, "desired_capacity": 1},
-        {"offset_seconds": -(prewarm // 2), "desired_capacity": min(2, peak_capacity)},
-        {"offset_seconds": -peak_lead, "desired_capacity": peak_capacity},
+        {"offset_seconds": offsets[0], "desired_capacity": 1},
+        {"offset_seconds": offsets[1], "desired_capacity": min(2, peak_capacity)},
+        {"offset_seconds": offsets[2], "desired_capacity": peak_capacity},
     ]
     database = Database(database_url)
     try:

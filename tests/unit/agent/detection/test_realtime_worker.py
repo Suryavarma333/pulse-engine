@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from agent.app.detection.realtime import RealtimeDetector, RealtimeDetectorConfig
 from agent.app.metrics.collector import CollectedSignals, RequiredSignalUnavailable
@@ -21,7 +22,7 @@ class ManualClock:
         return self.current
 
 
-def sample(second: int, rate: float) -> CollectedSignals:
+def sample(second: int, rate: float, *, demo_run_id=None) -> CollectedSignals:
     observed_at = NOW + timedelta(seconds=second)
     return CollectedSignals(
         observed_at=observed_at,
@@ -41,6 +42,7 @@ def sample(second: int, rate: float) -> CollectedSignals:
             "demo_app": {"status": "healthy"},
             "simulated": {"status": "simulated"},
         },
+        demo_run_id=demo_run_id,
     )
 
 
@@ -80,8 +82,37 @@ class MemoryPredictionWriter:
         self.points.extend(points)
         return prediction
 
+    async def record_reactive_comparator(
+        self, *, environment, demo_run_id, crossed_at
+    ):
+        prediction = next(
+            (
+                item
+                for item in reversed(self.predictions)
+                if item.environment == environment and item.demo_run_id == demo_run_id
+            ),
+            None,
+        )
+        if prediction is not None:
+            prediction.reactive_comparator_crossed_at = crossed_at
+            prediction.signal_evidence = {
+                **prediction.signal_evidence,
+                "reactive_comparator_crossed_at": crossed_at.isoformat(),
+            }
+            self.events.append("comparator")
+        return prediction
 
-def make_worker(collector, writer, clock, events, commands) -> RealtimeWorker:
+
+def make_worker(
+    collector,
+    writer,
+    clock,
+    events,
+    commands,
+    *,
+    active_run_provider=None,
+    command_handler_error: bool = False,
+) -> RealtimeWorker:
     detector = RealtimeDetector(
         RealtimeDetectorConfig(
             environment="test",
@@ -114,6 +145,8 @@ def make_worker(collector, writer, clock, events, commands) -> RealtimeWorker:
 
     async def command_handler(command):
         events.append("command")
+        if command_handler_error:
+            raise RuntimeError("response pipeline unavailable")
         commands.append(command)
 
     return RealtimeWorker(
@@ -123,7 +156,22 @@ def make_worker(collector, writer, clock, events, commands) -> RealtimeWorker:
         clock=clock,
         poll_seconds=1,
         command_handler=command_handler,
+        active_run_provider=active_run_provider,
     )
+
+
+class ActiveRunRecorder:
+    def __init__(self, run_id) -> None:
+        self.run_id = run_id
+        self.comparator_at = None
+
+    async def current_demo_run_id(self):
+        return self.run_id
+
+    async def record_reactive_comparator(self, *, run_id, crossed_at):
+        assert run_id == self.run_id
+        self.comparator_at = crossed_at
+        return self
 
 
 def test_sudden_spike_persists_snapshot_prediction_points_and_command_before_comparator() -> None:
@@ -173,6 +221,23 @@ def test_required_origin_failure_is_a_degraded_no_mutation_hold() -> None:
     assert worker.health.status is ProviderStatus.DEGRADED
 
 
+def test_unexpected_collection_failure_is_a_degraded_no_mutation_hold() -> None:
+    events = []
+    commands = []
+    clock = ManualClock()
+    collector = FakeCollector([RuntimeError("provider failed")], events)
+    writer = MemoryPredictionWriter(events)
+    worker = make_worker(collector, writer, clock, events, commands)
+
+    result = asyncio.run(worker.run_once())
+
+    assert result.held is True
+    assert result.reason == "collection_failed"
+    assert commands == []
+    assert writer.predictions == []
+    assert worker.health.detail == "collection_failed:RuntimeError"
+
+
 def test_persistence_failure_rolls_back_detector_confirmation_and_emits_no_command() -> None:
     events = []
     commands = []
@@ -201,3 +266,81 @@ def test_persistence_failure_rolls_back_detector_confirmation_and_emits_no_comma
     assert len(commands) == 1
     assert retried.command is commands[0]
     assert events.count("prediction") == 1
+
+
+def test_command_handoff_failure_preserves_the_persisted_prediction() -> None:
+    events = []
+    commands = []
+    clock = ManualClock()
+    writer = MemoryPredictionWriter(events)
+    collector = FakeCollector([sample(0, 10), sample(1, 10), sample(2, 25)], events)
+    worker = make_worker(
+        collector,
+        writer,
+        clock,
+        events,
+        commands,
+        command_handler_error=True,
+    )
+
+    async def run():
+        result = None
+        for second in (0, 1, 2):
+            clock.current = NOW + timedelta(seconds=second)
+            result = await worker.run_once()
+        return result
+
+    result = asyncio.run(run())
+
+    assert result is not None
+    assert result.held is True
+    assert result.reason == "command_handoff_failed"
+    assert result.prediction is not None
+    assert len(writer.predictions) == 1
+    assert commands == []
+    assert worker.health.detail == "command_handoff_failed:RuntimeError"
+
+
+def test_later_reactive_comparator_is_persisted_on_the_early_prediction() -> None:
+    events = []
+    commands = []
+    clock = ManualClock()
+    writer = MemoryPredictionWriter(events)
+    run_id = uuid4()
+    run_recorder = ActiveRunRecorder(run_id)
+    collector = FakeCollector(
+        [
+            sample(0, 10, demo_run_id=run_id),
+            sample(1, 10, demo_run_id=run_id),
+            sample(2, 25, demo_run_id=run_id),
+            sample(3, 60, demo_run_id=run_id),
+        ],
+        events,
+    )
+    worker = make_worker(
+        collector,
+        writer,
+        clock,
+        events,
+        commands,
+        active_run_provider=run_recorder,
+    )
+
+    async def run():
+        results = []
+        for second in (0, 1, 2, 3):
+            clock.current = NOW + timedelta(seconds=second)
+            results.append(await worker.run_once())
+        return results
+
+    results = asyncio.run(run())
+
+    crossed_at = NOW + timedelta(seconds=3)
+    assert results[2].prediction is not None
+    assert results[2].prediction.prediction.reactive_comparator_crossed_at == crossed_at
+    assert results[3].decision.reactive_comparator_crossed_at == crossed_at
+    assert writer.predictions[0].signal_evidence["reactive_comparator_crossed_at"] == (
+        crossed_at.isoformat()
+    )
+    assert run_recorder.comparator_at == crossed_at
+    assert events.count("comparator") == 1

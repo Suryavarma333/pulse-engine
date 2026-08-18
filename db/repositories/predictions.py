@@ -140,6 +140,44 @@ class PredictionRepository:
         async with self._session_factory() as session:
             return await session.scalar(statement)
 
+    async def record_reactive_comparator(
+        self,
+        *,
+        environment: str,
+        demo_run_id: UUID | None,
+        crossed_at: datetime,
+    ) -> SurgePrediction | None:
+        crossed_at = ensure_utc(crossed_at, field_name="crossed_at")
+        statement = (
+            select(SurgePrediction)
+            .where(
+                SurgePrediction.environment == environment,
+                SurgePrediction.mode == "realtime",
+                SurgePrediction.status.in_(["active", "evaluating"]),
+            )
+            .order_by(SurgePrediction.created_at.desc(), SurgePrediction.id.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if demo_run_id is None:
+            statement = statement.where(SurgePrediction.demo_run_id.is_(None))
+        else:
+            statement = statement.where(SurgePrediction.demo_run_id == demo_run_id)
+        async with self._session_factory() as session, session.begin():
+            prediction = await session.scalar(statement)
+            if prediction is None:
+                return None
+            if prediction.reactive_comparator_crossed_at is None:
+                prediction.reactive_comparator_crossed_at = crossed_at
+                prediction.signal_evidence = validate_evidence(
+                    {
+                        **prediction.signal_evidence,
+                        "reactive_comparator_crossed_at": crossed_at.isoformat(),
+                    }
+                )
+                await session.flush()
+            return prediction
+
     async def update_evaluation(
         self,
         *,

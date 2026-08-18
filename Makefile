@@ -1,8 +1,9 @@
 PYTHON ?= python3
 
-.PHONY: install test lint migrate run-demo run-agent compose-config compose-build \
-	compose-up compose-down compose-logs load-smoke terraform-fmt terraform-init \
-	terraform-validate infrastructure-test
+.PHONY: install test coverage lint compile migrate run-demo run-agent compose-config \
+	compose-build compose-up compose-down compose-logs load-smoke stack-smoke dashboard-install \
+	dashboard-test dashboard-build terraform-fmt terraform-init terraform-validate \
+	infrastructure-test secret-scan delivery-check
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -10,8 +11,14 @@ install:
 test:
 	$(PYTHON) -m pytest
 
+coverage:
+	$(PYTHON) -m pytest -q --cov=common --cov=db --cov=demo_app --cov=agent --cov-fail-under=85
+
 lint:
 	$(PYTHON) -m ruff check .
+
+compile:
+	$(PYTHON) -m compileall -q common db demo_app agent load_tests scripts tests
 
 migrate:
 	$(PYTHON) -m alembic -c db/alembic.ini upgrade head
@@ -40,6 +47,18 @@ compose-logs:
 load-smoke:
 	docker compose --profile load run --rm locust
 
+stack-smoke:
+	bash scripts/smoke_stack.sh
+
+dashboard-install:
+	pnpm --dir dashboard install --frozen-lockfile
+
+dashboard-test:
+	pnpm --dir dashboard test
+
+dashboard-build:
+	pnpm --dir dashboard build
+
 terraform-fmt:
 	terraform -chdir=infra fmt -check -recursive
 
@@ -51,3 +70,8 @@ terraform-validate: terraform-init
 
 infrastructure-test:
 	$(PYTHON) -m pytest -q tests/unit/infra
+
+secret-scan:
+	$(PYTHON) scripts/secret_scan.py
+
+delivery-check: compile lint coverage dashboard-install dashboard-test dashboard-build secret-scan

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -18,6 +19,10 @@ CommandHandler = Callable[[ResponseCommand], Awaitable[None]]
 
 class ActiveRunProvider(Protocol):
     async def current_demo_run_id(self) -> UUID | None: ...
+
+    async def record_reactive_comparator(
+        self, *, run_id: UUID, crossed_at: datetime
+    ) -> object | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +59,7 @@ class RealtimeWorker:
         self._poll_seconds = poll_seconds
         self._command_handler = command_handler
         self._active_run_provider = active_run_provider
+        self._recorded_comparator_at: datetime | None = None
         self._cycle_lock = asyncio.Lock()
         self._health = WorkerHealth(
             name=self.name,
@@ -133,6 +139,17 @@ class RealtimeWorker:
                             decision, prediction, command, True, "command_handoff_failed"
                         )
 
+            comparator_error = await self._record_comparator(
+                decision,
+                prediction=prediction,
+                demo_run_id=demo_run_id,
+            )
+            if comparator_error is not None:
+                self._set_health(ProviderStatus.DEGRADED, comparator_error)
+                return WorkerCycleResult(
+                    decision, prediction, command, False, "comparator_persistence_degraded"
+                )
+
             self._set_health(ProviderStatus.HEALTHY, "cycle_complete")
             return WorkerCycleResult(decision, prediction, command, False, decision.reason_code)
 
@@ -151,6 +168,40 @@ class RealtimeWorker:
             checked_at=self._clock.now(),
             detail=detail,
         )
+
+    async def _record_comparator(
+        self,
+        decision: RealtimeDecision,
+        *,
+        prediction: PersistedPrediction | None,
+        demo_run_id: UUID | None,
+    ) -> str | None:
+        crossed_at = decision.reactive_comparator_crossed_at
+        if crossed_at is None or crossed_at == self._recorded_comparator_at:
+            return None
+        try:
+            prediction_recorded = (
+                prediction is not None
+                and prediction.prediction.reactive_comparator_crossed_at == crossed_at
+            ) or await self._predictions.record_reactive_comparator(
+                environment=decision.snapshot.environment,
+                demo_run_id=demo_run_id,
+                crossed_at=crossed_at,
+            )
+            run_recorded = demo_run_id is None
+            if demo_run_id is not None and self._active_run_provider is not None:
+                run_recorded = (
+                    await self._active_run_provider.record_reactive_comparator(
+                        run_id=demo_run_id,
+                        crossed_at=crossed_at,
+                    )
+                    is not None
+                )
+            if prediction_recorded and run_recorded:
+                self._recorded_comparator_at = crossed_at
+            return None
+        except Exception as exc:
+            return f"comparator_persistence_failed:{type(exc).__name__}"
 
 
 __all__ = ["ActiveRunProvider", "CommandHandler", "RealtimeWorker", "WorkerCycleResult"]

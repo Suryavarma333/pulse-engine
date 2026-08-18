@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from agent.app.services.ramp_planner import RampPlan
 from common.contracts import RecoveryPlan, ResponseCommand, SurgePredictionCandidate
 from common.enums import PredictionMode, SheddingLevel
+from common.time import ensure_utc
 from db.models import SurgePrediction, SurgePredictionPoint
 
 
@@ -25,6 +26,14 @@ class PredictionWriter(Protocol):
     async def get_with_points(
         self, prediction_id: UUID, *, point_limit: int = 1_000
     ) -> tuple[SurgePrediction | None, list[SurgePredictionPoint]]: ...
+
+    async def record_reactive_comparator(
+        self,
+        *,
+        environment: str,
+        demo_run_id: UUID | None,
+        crossed_at: datetime,
+    ) -> SurgePrediction | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +145,20 @@ class PredictionService:
             points=tuple(points),
             command=command,
         )
+
+    async def record_reactive_comparator(
+        self,
+        *,
+        environment: str,
+        demo_run_id: UUID | None,
+        crossed_at: datetime,
+    ) -> bool:
+        prediction = await self._writer.record_reactive_comparator(
+            environment=environment,
+            demo_run_id=demo_run_id,
+            crossed_at=ensure_utc(crossed_at, field_name="crossed_at"),
+        )
+        return prediction is not None
 
     async def ensure_scheduled(
         self,
