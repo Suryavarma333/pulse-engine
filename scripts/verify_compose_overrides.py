@@ -5,7 +5,6 @@ import os
 import subprocess
 from typing import Any
 
-
 OVERRIDES = {
     "PULSE_QUERY_MAX_ROWS": "321",
     "PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS": "17",
