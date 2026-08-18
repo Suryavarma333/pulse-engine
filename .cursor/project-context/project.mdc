@@ -1,0 +1,104 @@
+---
+description: Live project identity, repository, stack, verification, and constraints for Pulse.
+globs:
+alwaysApply: false
+---
+
+# Pulse project configuration
+
+```yaml
+project:
+  name: pulse-engine
+  displayName: Pulse Engine
+  type: monolith
+
+repositories:
+  primary: Suryavarma333/pulse-engine
+  modifiable:
+    - Suryavarma333/pulse-engine
+  readOnly: []
+  involved:
+    - Suryavarma333/pulse-engine
+  localWorkspace: true
+
+technology:
+  languages:
+    - Python
+    - YAML
+    - Dockerfile
+  languageVersions:
+    Python: ">=3.11"
+  frameworks:
+    - FastAPI
+    - SQLAlchemy 2
+    - Alembic
+    - pytest
+  buildTool: pip-setuptools
+  testCommands:
+    fullSuite: .venv/bin/pytest -q
+    singleClass: .venv/bin/pytest -q {test_path}
+  packageRoots:
+    - common
+    - db
+    - demo_app
+  routeConfigPatterns:
+    - demo_app/app/routes/*.py
+    - demo_app/app/main.py
+
+bugbot:
+  enabled: false
+  repoUrl: https://github.com/Suryavarma333/pulse-engine
+  triggerOnDraftPr: false
+  triggerComment: /bugbot
+  botLogins: []
+  setupDoc: TBD
+
+jira:
+  enabled: false
+  baseUrl: TBD
+  projectKey: TBD
+  projectStyle: TBD
+  issueTypes:
+    epic: Epic
+    story: Story
+    task: Task
+    subtask: Sub-task
+
+branching:
+  defaultBranch: codex/demo-app-foundation
+  mergeStrategy: pull-request
+  commitConvention: conventional
+
+dependencies:
+  internal: []
+  external:
+    - FastAPI
+    - PostgreSQL 16
+    - SQLAlchemy 2
+    - Alembic
+    - psycopg 3
+    - Uvicorn
+    - pytest
+    - Ruff
+
+agentVerification:
+  runLocally: true
+  ciCommands:
+    compile: .venv/bin/python -m compileall -q common db demo_app
+    unitTests: .venv/bin/pytest -q
+    lint: .venv/bin/ruff check .
+  skipLocal: []
+  deferTo:
+    - GitHub pull-request checks once workflows are added
+    - pre-PR gate requires dependency reconciliation, compile pass, and green checks
+
+constraints:
+  - Use Python 3.11 or newer for backend services
+  - Keep AWS mutations behind dry-run mode by default
+  - Enforce a configurable maximum EC2 instance ceiling before every scaling action
+  - Never shed or rate-limit the critical checkout path
+  - Record prediction, scaling, and load-shedding decisions with timestamp and reasoning
+  - Scale down gradually with cooldown protection
+  - Do not commit secrets, tokens, private keys, .env files, or AWS credentials
+  - Do not edit .cursor kit files outside .cursor/project-context
+```

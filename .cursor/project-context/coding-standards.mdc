@@ -1,0 +1,87 @@
+---
+description: Live Python, framework, testing, review, and entropy standards for Pulse.
+globs:
+alwaysApply: true
+---
+
+# Pulse coding standards
+
+```yaml
+codingStandards:
+  languages:
+    Python:
+      version: ">=3.11"
+      conventions:
+        - Use type annotations for public functions, data structures, and service boundaries
+        - Prefer small modules with explicit dependencies over global mutable state
+        - Use UTC-aware datetimes for persisted and API timestamps
+        - Keep lines at or below 100 characters except generated migration expressions
+
+  frameworks:
+    FastAPI:
+      - Use application factories and lifespan hooks for resources
+      - Validate request and response contracts with Pydantic
+      - Keep operational control routes separate from protected commerce routes
+    SQLAlchemy:
+      - Use SQLAlchemy 2 typed declarative mappings
+      - Access PostgreSQL asynchronously through session factories
+      - Apply schema changes through reversible Alembic migrations
+
+  testing:
+    framework: pytest
+    runner: .venv/bin/pytest
+    location: tests
+    requirements:
+      - New business logic requires unit tests
+      - HTTP behavior requires API tests
+      - Critical checkout protection must be tested at every shedding tier
+      - Detection thresholds, cooldowns, instance ceilings, and dry-run behavior require deterministic tests
+      - Database migrations must compile for PostgreSQL and include downgrade logic
+      - End-to-end surge modes require reproducible Locust scenarios
+    coverage:
+      tool: pytest-cov
+      threshold: 85
+
+  naming:
+    commits: conventional
+    packages: lowercase snake_case matching the existing layout
+
+  review:
+    blockingSeverities:
+      - BLOCKER
+    strictReview: true
+    dimensions:
+      - requirements-traceability
+      - architecture
+      - security
+      - performance
+      - scalability
+      - resilience
+      - maintainability
+      - entropy
+      - cost-safety
+    securityChecks:
+      - no secrets or credentials in source, examples, Terraform state, or committed environment files
+      - internal control endpoints require authentication
+      - AWS mutations enforce dry-run and maximum capacity safeguards
+      - Terraform IAM is least privilege and resource scoped where AWS permits
+      - do not edit .cursor kit files outside project-context
+
+  entropy:
+    enabled: true
+    policy: remove-on-touch
+    onChange:
+      - remove unused symbols and commented-out code
+      - delete superseded paths when replacing behavior
+      - remove orphaned tests and configuration keys
+    blockReview:
+      - new commented-out code without a tracked reason
+      - parallel superseded implementation left in the diff
+      - placeholder implementations presented as completed features
+    reference: .cursor/sdlc-system/workflow/entropy-management.md
+
+  documentation:
+    sdlcArtifacts: docs/sdlc/{workflowId}/
+    projectGuide: README.md
+    stackRules: []
+```

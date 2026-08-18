@@ -1,0 +1,42 @@
+---
+description: Live Pulse environments, deployment direction, rollback, CI, and observability.
+globs:
+alwaysApply: false
+---
+
+# Pulse deployment context
+
+```yaml
+deployment:
+  cloudProvider: aws
+
+  environments:
+    - name: local
+      purpose: Docker Compose development and end-to-end surge demonstrations
+      runCommand: docker compose up --build
+      deployMechanism: Docker Compose
+    - name: demo-aws
+      purpose: Low-cost portfolio deployment using a small EC2 Auto Scaling Group and CloudWatch custom metrics
+      runCommand: terraform -chdir=infra apply
+      deployMechanism: Terraform plus EC2 launch template user data
+
+  strategy:
+    type: rolling
+    featureFlags:
+      - PULSE_DRY_RUN defaults to true
+      - Live AWS scaling requires explicit configuration and credentials
+
+  rollback:
+    code: Revert the feature commit or pull request and rebuild the previous container image
+    database: Run the corresponding Alembic downgrade; the initial and subsequent migrations must remain reversible
+    config: Restore the previous environment values and re-run Docker Compose or Terraform plan/apply
+
+  ci:
+    provider: none-yet
+    prChecks: The complete delivery must add GitHub Actions for lint, tests, migration compilation, dashboard build, and Terraform validation
+    watchCommand: gh pr checks {number} --repo Suryavarma333/pulse-engine
+
+  observability:
+    apm: CloudWatch custom metrics and application metrics exposed by Pulse
+    logs: Structured application logs plus PostgreSQL audit records for predictions, scaling actions, and shedding transitions
+```

@@ -1,0 +1,69 @@
+---
+description: Live Pulse architecture, boundaries, integrations, auth, and error behavior.
+globs:
+alwaysApply: false
+---
+
+# Pulse architecture
+
+```yaml
+architecture:
+  summary: Pulse is a portfolio-grade predictive traffic-surge platform. The current repository contains a FastAPI protected commerce application with tiered reversible load shedding, a rolling traffic-metrics collector, and a PostgreSQL audit and forecasting schema. The full delivery extends this foundation with scheduled and real-time surge agents, safe AWS Auto Scaling control, load tests, a dashboard, and Terraform.
+
+  style: modular-monolith
+
+  layers:
+    - name: http
+      paths:
+        - demo_app/app/main.py
+        - demo_app/app/routes
+        - demo_app/app/schemas.py
+    - name: business
+      paths:
+        - demo_app/app/shedding
+        - demo_app/app/metrics.py
+        - common
+    - name: infrastructure
+      paths:
+        - db
+        - demo_app/Dockerfile
+        - docker-compose.yml
+
+  boundaries:
+    - HTTP routes read load-shedding state through the controller rather than manipulating persistence directly
+    - Critical endpoint policy is centralized and asserts checkout remains normal at every tier
+    - Database access is isolated behind asynchronous session and store abstractions
+    - Flexible evidence is stored as JSONB while dashboard and evaluation fields remain typed columns
+    - AWS mutating operations must be isolated behind one dry-run-aware adapter with capacity ceilings and idempotency
+
+  integrations:
+    - PostgreSQL 16 for traffic, prediction, scaling, scheduled-event, and shedding audit data
+    - Docker Compose for local service orchestration
+    - GitHub for source control and pull-request delivery
+    - AWS Auto Scaling, CloudWatch, CloudFront, and SQS are required target integrations but are not implemented in the current baseline
+
+  auth:
+    userFacingPattern: The demo commerce endpoints are intentionally unauthenticated for local load testing
+    partnerPattern: Internal load-shedding control requires the X-Pulse-Control-Token header and constant-time comparison
+    configPaths:
+      - .env.example
+      - demo_app/app/config.py
+
+  errorHandling:
+    businessException: FastAPI validation and HTTPException responses at the HTTP boundary; persistence failures prevent unaudited shedding transitions
+    codes:
+      - HTTP 401 for invalid internal control token
+      - HTTP 422 for invalid request payloads
+      - HTTP 429 for intentionally rate-limited non-critical traffic
+      - HTTP 500 for unexpected failures counted by traffic metrics
+
+  diagrams:
+    existing: []
+    preferredFormat: mermaid
+
+  repositoryRelationships:
+    - primary: Suryavarma333/pulse-engine
+      consumes:
+        - PostgreSQL
+        - AWS control-plane APIs in the target architecture
+```
