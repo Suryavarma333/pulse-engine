@@ -18,10 +18,10 @@ data "aws_subnet" "selected" {
 resource "aws_launch_template" "pulse" {
   name                   = local.launch_template_name
   description            = "Bounded low-cost Pulse protected demo application"
-  image_id                = var.ami_id
-  instance_type           = var.instance_type
+  image_id               = var.ami_id
+  instance_type          = var.instance_type
   update_default_version = true
-  user_data               = base64encode(var.user_data)
+  user_data              = base64encode(var.user_data)
 
   iam_instance_profile {
     arn = aws_iam_instance_profile.pulse.arn

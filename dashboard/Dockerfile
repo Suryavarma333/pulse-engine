@@ -18,6 +18,9 @@ ENV NODE_ENV=production
 WORKDIR /app
 RUN addgroup --system pulse && adduser --system --ingroup pulse pulse
 COPY --from=build --chown=pulse:pulse /app/.next/standalone ./
+# Next 16 standalone tracing can omit dynamically resolved pnpm package files. Merge the frozen
+# dependency tree so the runtime never depends on an incomplete traced package.
+COPY --from=dependencies --chown=pulse:pulse /app/node_modules ./node_modules
 COPY --from=build --chown=pulse:pulse /app/.next/static ./.next/static
 USER pulse
 EXPOSE 3000

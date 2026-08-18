@@ -15,5 +15,5 @@ resource "aws_cloudwatch_metric_alarm" "reactive_comparator" {
   alarm_actions             = var.reactive_alarm_action_arns
   ok_actions                = []
   insufficient_data_actions = []
-  tags                       = local.common_tags
+  tags                      = local.common_tags
 }

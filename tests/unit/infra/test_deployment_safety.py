@@ -43,6 +43,7 @@ def test_runtime_images_are_non_root_and_load_driver_is_on_demand() -> None:
     assert "ENTRYPOINT [\"python\", \"load_tests/scripts/run_scenario.py\"]" in agent_image
     assert "pnpm install --frozen-lockfile" in dashboard_image
     assert "output: \"standalone\"" in read("dashboard/next.config.ts")
+    assert "/app/node_modules ./node_modules" in dashboard_image
     assert "USER pulse" in dashboard_image
     assert "HEALTHCHECK" in dashboard_image
 

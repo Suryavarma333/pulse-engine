@@ -1,9 +1,13 @@
 # Requirements Discovery Document
 
-**Artifact slug:** `complete-predictive-surge-platform` (paired SDD: `complete-predictive-surge-platform.md`)  
-**Workflow ID:** `daefa536-d064-42a8-aaef-98272b2b332e`  
-**Date:** `2026-08-18T04:42:20.000Z`  
-**Status:** READY_FOR_SDD  
+**Artifact slug:** `complete-predictive-surge-platform` (paired SDD: `complete-predictive-surge-platform.md`)
+
+**Workflow ID:** `daefa536-d064-42a8-aaef-98272b2b332e`
+
+**Date:** `2026-08-18T04:42:20.000Z`
+
+**Status:** READY_FOR_SDD
+
 **Work type:** `feature`
 
 ## 1. Business objective

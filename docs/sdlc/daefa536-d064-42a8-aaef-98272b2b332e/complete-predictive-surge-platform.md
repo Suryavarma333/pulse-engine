@@ -1,10 +1,15 @@
 # Software Design Document
 
-**Artifact slug:** `complete-predictive-surge-platform`  
-**Workflow ID:** `daefa536-d064-42a8-aaef-98272b2b332e`  
-**Title:** Complete Predictive Surge Platform  
-**Version:** 1.0  
-**Status:** PENDING_APPROVAL  
+**Artifact slug:** `complete-predictive-surge-platform`
+
+**Workflow ID:** `daefa536-d064-42a8-aaef-98272b2b332e`
+
+**Title:** Complete Predictive Surge Platform
+
+**Version:** 1.0
+
+**Status:** PENDING_APPROVAL
+
 **RDD reference:** [complete-predictive-surge-platform-requirements.md](./complete-predictive-surge-platform-requirements.md)
 
 ## 1. System overview

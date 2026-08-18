@@ -127,7 +127,7 @@ jobs:
         with:
           terraform_version: "1.9.8"
       - name: Check formatting
-        run: terraform -chdir=infra fmt -check -recursive
+        run: terraform -chdir=infra fmt -check -diff -recursive
       - name: Initialize without backend
         run: terraform -chdir=infra init -backend=false
       - name: Validate configuration

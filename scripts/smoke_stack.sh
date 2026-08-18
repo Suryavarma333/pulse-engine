@@ -11,7 +11,13 @@ export PULSE_POSTGRES_VOLUME="${project_name}-postgres-data"
 export PULSE_CONTROL_TOKEN="${control_token}"
 
 cleanup() {
-  docker compose down --volumes --remove-orphans
+  local exit_code=$?
+  if ((exit_code != 0)); then
+    docker compose ps --all || true
+    docker compose logs --tail=200 postgres migrate demo-app agent dashboard || true
+  fi
+  docker compose down --volumes --remove-orphans || true
+  exit "${exit_code}"
 }
 trap cleanup EXIT
 
