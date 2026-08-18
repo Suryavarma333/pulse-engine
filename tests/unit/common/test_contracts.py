@@ -24,6 +24,7 @@ from common.enums import (
     ExecutionMode,
     PredictionMode,
     ProviderStatus,
+    ResponseIntent,
     SheddingLevel,
 )
 
@@ -99,6 +100,7 @@ def test_response_command_allows_clamping_but_rejects_unsafe_recovery_floor() ->
 
     assert command.requested_desired_capacity == 8
     assert command.maximum_ceiling == 3
+    assert command.intent is ResponseIntent.DETECTOR
 
     with pytest.raises(ValidationError, match="capacity_floor"):
         ResponseCommand.model_validate(

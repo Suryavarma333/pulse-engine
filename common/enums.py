@@ -25,6 +25,14 @@ class ExecutionMode(StrEnum):
     LIVE = "live"
 
 
+class ResponseIntent(StrEnum):
+    DETECTOR = "detector"
+    PROTECT = "protect"
+    PREWARM = "prewarm"
+    RECOVER = "recover"
+    HOLD = "hold"
+
+
 class ControlState(StrEnum):
     NORMAL = "normal"
     WATCH = "watch"

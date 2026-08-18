@@ -17,6 +17,9 @@ def test_agent_settings_default_to_bounded_dry_run() -> None:
     assert settings.execution_mode is ExecutionMode.DRY_RUN
     assert settings.global_instance_ceiling == 3
     assert settings.minimum_desired_capacity == 1
+    assert settings.shedding_control_timeout_seconds == 2
+    assert settings.reconciliation_min_age_seconds == 30
+    assert settings.reconciliation_batch_size == 50
     assert "local-demo-token" not in repr(settings)
 
 
@@ -61,12 +64,18 @@ def test_agent_settings_parse_environment_without_exposing_token() -> None:
             "PULSE_ASG_NAME": "pulse-demo",
             "PULSE_MAX_INSTANCE_CEILING": "4",
             "PULSE_CONTROL_TOKEN": "runtime-only-token",
+            "PULSE_SHEDDING_CONTROL_TIMEOUT_SECONDS": "3",
+            "PULSE_RECONCILIATION_MIN_AGE_SECONDS": "45",
+            "PULSE_RECONCILIATION_BATCH_SIZE": "25",
         }
     )
 
     assert settings.execution_mode is ExecutionMode.LIVE
     assert settings.global_instance_ceiling == 4
     assert settings.control_token.get_secret_value() == "runtime-only-token"
+    assert settings.shedding_control_timeout_seconds == 3
+    assert settings.reconciliation_min_age_seconds == 45
+    assert settings.reconciliation_batch_size == 25
     assert "runtime-only-token" not in repr(settings)
 
 

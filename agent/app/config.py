@@ -47,6 +47,9 @@ class AgentSettings(BaseModel):
     query_max_window_seconds: int = Field(default=86_400, ge=60, le=604_800)
     query_max_rows: int = Field(default=1_000, ge=1, le=1_000)
     provider_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
+    shedding_control_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    reconciliation_min_age_seconds: int = Field(default=30, ge=0, le=86_400)
+    reconciliation_batch_size: int = Field(default=50, ge=1, le=1_000)
     optional_signal_freshness_seconds: int = Field(default=15, ge=1, le=3_600)
     origin_signal_freshness_seconds: int = Field(default=10, ge=1, le=3_600)
     signal_buffer_capacity: int = Field(default=1_000, ge=1, le=100_000)
@@ -110,6 +113,9 @@ class AgentSettings(BaseModel):
             "PULSE_QUERY_MAX_WINDOW_SECONDS": "query_max_window_seconds",
             "PULSE_QUERY_MAX_ROWS": "query_max_rows",
             "PULSE_PROVIDER_TIMEOUT_SECONDS": "provider_timeout_seconds",
+            "PULSE_SHEDDING_CONTROL_TIMEOUT_SECONDS": "shedding_control_timeout_seconds",
+            "PULSE_RECONCILIATION_MIN_AGE_SECONDS": "reconciliation_min_age_seconds",
+            "PULSE_RECONCILIATION_BATCH_SIZE": "reconciliation_batch_size",
             "PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS": "optional_signal_freshness_seconds",
             "PULSE_ORIGIN_SIGNAL_FRESHNESS_SECONDS": "origin_signal_freshness_seconds",
             "PULSE_SIGNAL_BUFFER_CAPACITY": "signal_buffer_capacity",

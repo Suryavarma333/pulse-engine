@@ -14,6 +14,7 @@ from common.enums import (
     ExecutionMode,
     PredictionMode,
     ProviderStatus,
+    ResponseIntent,
     SheddingLevel,
 )
 from common.time import ensure_utc
@@ -141,6 +142,7 @@ class ResponseCommand(ContractModel):
     trigger_snapshot_id: int | None = Field(default=None, ge=1)
     scheduled_event_id: UUID | None = None
     mode: PredictionMode
+    intent: ResponseIntent = ResponseIntent.DETECTOR
     target_resource: str = Field(min_length=1, max_length=255)
     requested_desired_capacity: int = Field(ge=0)
     maximum_ceiling: int = Field(ge=1, le=100)

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,10 +38,14 @@ class ScalingActionRepository:
         previous_desired_capacity: int,
         execution_mode: ExecutionMode,
         requested_at: datetime,
+        effective_ceiling: int | None = None,
     ) -> ClaimResult:
         if previous_desired_capacity < 0:
             raise ValueError("previous_desired_capacity must be nonnegative")
         requested_at = ensure_utc(requested_at, field_name="requested_at")
+        ceiling = command.maximum_ceiling if effective_ceiling is None else effective_ceiling
+        if not 1 <= ceiling <= command.maximum_ceiling:
+            raise ValueError("effective_ceiling must be positive and within the command ceiling")
         action_id = uuid4()
         values = {
             "id": action_id,
@@ -57,7 +61,7 @@ class ScalingActionRepository:
             "target_resource": command.target_resource,
             "previous_desired_capacity": previous_desired_capacity,
             "requested_desired_capacity": command.requested_desired_capacity,
-            "max_instance_ceiling": command.maximum_ceiling,
+            "max_instance_ceiling": ceiling,
             "status": ActionStatus.PLANNED.value,
             "reason_code": command.reason_code,
             "reasoning": command.reasoning,
@@ -84,6 +88,43 @@ class ScalingActionRepository:
             if existing is None:
                 raise RuntimeError("conflicting scaling action could not be loaded")
             return ClaimResult(action=existing, claimed=False)
+
+    async def has_unresolved(self, *, target_resource: str) -> bool:
+        async with self._session_factory() as session:
+            unresolved = await session.scalar(
+                select(ScalingAction.id)
+                .where(
+                    ScalingAction.target_resource == target_resource,
+                    ScalingAction.status.in_(
+                        [ActionStatus.PLANNED.value, ActionStatus.UNKNOWN.value]
+                    ),
+                )
+                .limit(1)
+            )
+        return unresolved is not None
+
+    async def list_reconciliation_candidates(
+        self,
+        *,
+        requested_before: datetime,
+        limit: int = 50,
+    ) -> list[ScalingAction]:
+        requested_before = ensure_utc(requested_before, field_name="requested_before")
+        limit = min(max(limit, 1), self._limits.max_rows)
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(ScalingAction)
+                .where(
+                    ScalingAction.requested_at <= requested_before,
+                    or_(
+                        ScalingAction.status == ActionStatus.PLANNED.value,
+                        ScalingAction.status == ActionStatus.UNKNOWN.value,
+                    ),
+                )
+                .order_by(ScalingAction.requested_at, ScalingAction.id)
+                .limit(limit)
+            )
+        return list(rows.all())
 
     async def update_outcome(
         self,
@@ -131,6 +172,26 @@ class ScalingActionRepository:
                 )
             )
             await session.refresh(action)
+            return action
+
+    async def record_control_error(
+        self,
+        *,
+        idempotency_key: str,
+        error_message: str,
+    ) -> ScalingAction:
+        error_message = error_message[:2_000]
+        async with self._session_factory() as session, session.begin():
+            action = await session.scalar(
+                select(ScalingAction)
+                .where(ScalingAction.idempotency_key == idempotency_key)
+                .with_for_update()
+            )
+            if action is None:
+                raise LookupError(f"scaling action {idempotency_key!r} was not found")
+            existing = f"{action.error_message}; " if action.error_message else ""
+            action.error_message = f"{existing}{error_message}"[:2_000]
+            await session.flush()
             return action
 
     async def list_bounded(
