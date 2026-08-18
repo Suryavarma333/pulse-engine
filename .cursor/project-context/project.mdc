@@ -1,0 +1,184 @@
+---
+description: Live project identity, repository, stack, verification, and constraints for Pulse.
+globs:
+alwaysApply: false
+---
+
+# Pulse project configuration
+
+```yaml
+project:
+  name: pulse-engine
+  displayName: Pulse Engine
+  type: multi-service-platform
+
+repositories:
+  primary: Suryavarma333/pulse-engine
+  modifiable:
+    - Suryavarma333/pulse-engine
+  readOnly: []
+  involved:
+    - Suryavarma333/pulse-engine
+  localWorkspace: true
+
+technology:
+  languages:
+    - Python
+    - TypeScript/TSX
+    - HCL
+    - YAML
+    - Shell
+    - Dockerfile
+  languageVersions:
+    Python: ">=3.11 (CI and container: 3.11)"
+    Node.js: "22"
+    TypeScript: "5.9.2"
+    pnpm: "11.19.0"
+    Terraform: ">=1.6.0 (CI: 1.9.8)"
+    PostgreSQL: "16-alpine"
+  frameworks:
+    - FastAPI >=0.115,<1
+    - Pydantic >=2.9,<3
+    - SQLAlchemy >=2.0,<3
+    - Alembic >=1.13,<2
+    - Next.js 16.3.1
+    - React 19.2.8
+    - Locust >=2.32,<3
+    - Terraform AWS provider >=5,<7
+  buildTool: setuptools/pip + pnpm + Docker Compose + Terraform
+  testCommands:
+    fullSuite: >-
+      .venv/bin/pytest -q --cov=common --cov=db --cov=demo_app --cov=agent
+      --cov-report=term-missing --cov-fail-under=85 &&
+      pnpm --dir dashboard test && pnpm --dir dashboard build
+    singleClass: .venv/bin/pytest -q {test_path}
+    dashboard: pnpm --dir dashboard test
+    postgresqlIntegration: .venv/bin/pytest -q tests/integration
+    composeSmoke: bash scripts/smoke_stack.sh
+    terraform: >-
+      terraform -chdir=infra fmt -check -recursive &&
+      terraform -chdir=infra init -backend=false &&
+      terraform -chdir=infra validate
+  packageRoots:
+    - agent
+    - common
+    - db
+    - demo_app
+    - load_tests
+    - scripts
+    - dashboard
+    - infra
+  routeConfigPatterns:
+    - agent/app/api/*.py
+    - agent/app/main.py
+    - demo_app/app/routes/*.py
+    - demo_app/app/main.py
+    - dashboard/app/*.tsx
+
+bugbot:
+  enabled: false
+  repoUrl: https://github.com/Suryavarma333/pulse-engine
+  triggerOnDraftPr: false
+  triggerComment: /bugbot
+  botLogins: []
+  setupDoc: TBD
+
+jira:
+  enabled: false
+  baseUrl: TBD
+  projectKey: TBD
+  projectStyle: TBD
+  issueTypes:
+    epic: Epic
+    story: Story
+    task: Task
+    subtask: Sub-task
+
+branching:
+  defaultBranch: codex/demo-app-foundation
+  mergeStrategy: pull-request
+  commitConvention: conventional
+
+dependencies:
+  internal:
+    - agent -> common, db, demo_app HTTP control boundary
+    - demo_app -> common, db
+    - dashboard -> read-only agent /api/v1 HTTP API
+    - load_tests -> demo_app and authenticated agent control APIs
+    - infra -> optional AWS runtime boundary for agent
+  external:
+    - setuptools >=69
+    - alembic >=1.13,<2
+    - boto3 >=1.35,<2
+    - fastapi >=0.115,<1
+    - httpx >=0.27,<1
+    - pydantic >=2.9,<3
+    - psycopg[binary] >=3.2,<4
+    - sqlalchemy >=2.0,<3
+    - uvicorn[standard] >=0.30,<1
+    - pytest >=8,<9
+    - pytest-cov >=5,<7
+    - ruff >=0.8,<1
+    - locust >=2.32,<3
+    - next 16.3.1
+    - react 19.2.8
+    - react-dom 19.2.8
+    - "@testing-library/jest-dom 7.0.1"
+    - "@testing-library/react 16.3.2"
+    - "@types/node 26.2.0"
+    - "@types/react 19.2.18"
+    - "@types/react-dom 19.2.4"
+    - jsdom 30.0.1
+    - typescript 5.9.2
+    - vitest 4.1.10
+    - python:3.11-slim container base
+    - node:22-alpine container base
+    - PostgreSQL 16-alpine
+    - Terraform AWS provider >=5.0,<7.0
+
+agentVerification:
+  runLocally: true
+  ciCommands:
+    compile: .venv/bin/python -m compileall -q common db demo_app agent load_tests scripts tests
+    frontendCompile: CI=true pnpm --dir dashboard build
+    unitTests: >-
+      .venv/bin/pytest -q --cov=common --cov=db --cov=demo_app --cov=agent
+      --cov-report=term-missing --cov-fail-under=85
+    lint: .venv/bin/ruff check .
+    postgresql: >-
+      .venv/bin/python -m alembic -c db/alembic.ini upgrade head &&
+      .venv/bin/python -m alembic -c db/alembic.ini downgrade base &&
+      .venv/bin/python -m alembic -c db/alembic.ini upgrade head &&
+      .venv/bin/pytest -q tests/integration
+    dashboard: >-
+      pnpm --dir dashboard install --frozen-lockfile &&
+      pnpm --dir dashboard test && pnpm --dir dashboard build
+    composeSmoke: bash scripts/smoke_stack.sh
+    terraform: >-
+      terraform -chdir=infra fmt -check -diff -recursive &&
+      terraform -chdir=infra init -backend=false &&
+      terraform -chdir=infra validate &&
+      .venv/bin/pytest -q tests/unit/infra
+    secretSafety: .venv/bin/python scripts/secret_scan.py
+  skipLocal: []
+  deferTo:
+    - GitHub Actions repeats full Python, PostgreSQL, dashboard, Compose/Locust, Terraform, and secret checks
+    - Live AWS plan/apply and live mutation require explicit operator authorization and credentials
+
+constraints:
+  - Use Python 3.11 or newer for backend services
+  - Use Node.js 22 and the frozen pnpm 11.19.0 dashboard lockfile
+  - Keep AWS mutations behind dry-run mode by default
+  - Enforce a configurable maximum EC2 instance ceiling before every scaling action
+  - Keep scheduled and real-time commands behind one priority arbiter, response pipeline, and ASG mutation adapter
+  - Persist the action claim and tier outbox before external work; reconcile unknown or incomplete work without repeating capacity
+  - Keep the dashboard read-only and consume only the versioned pulse.snapshot.v1 DTO
+  - Report mandatory database or worker degradation through health 503 while supervisors and workers retry safely
+  - Never shed or rate-limit the critical checkout path
+  - Record prediction, scaling, and load-shedding decisions with timestamp and reasoning
+  - Scale down gradually with cooldown protection
+  - Keep collection, retries, reconciliation, retention, API queries, and evidence bounded
+  - Preserve reversible Alembic upgrade and downgrade paths
+  - Do not commit secrets, tokens, private keys, .env files, or AWS credentials
+  - Do not edit .cursor kit files outside .cursor/project-context
+```

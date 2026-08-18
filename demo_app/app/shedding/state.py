@@ -9,7 +9,13 @@ from uuid import UUID, uuid4
 
 from common.enums import SheddingLevel
 from demo_app.app.shedding.policies import policy_snapshot
-from demo_app.app.shedding.store import LoadSheddingStore, SheddingTransition
+from demo_app.app.shedding.store import (
+    AuditPersistenceUnavailableError,
+    LoadSheddingStore,
+    SheddingTransition,
+    StoredSheddingState,
+    TransitionConflictError,
+)
 
 logger = logging.getLogger("pulse.demo_app.shedding")
 
@@ -30,12 +36,22 @@ class TransitionResult:
     state: SheddingState
 
 
+@dataclass(frozen=True, slots=True)
+class PersistenceStatus:
+    backend: str
+    durable: bool
+    available: bool
+    state_loaded: bool
+
+
 class LoadSheddingController:
     def __init__(self, store: LoadSheddingStore, environment: str) -> None:
         self._store = store
         self._environment = environment
         self._lock = asyncio.Lock()
         self._state = self._normal_state()
+        self._persistence_available = False
+        self._state_loaded = False
 
     @staticmethod
     def _normal_state() -> SheddingState:
@@ -49,20 +65,58 @@ class LoadSheddingController:
         )
 
     async def load(self) -> None:
-        stored = await self._store.load_active(self._environment)
-        if stored is None:
+        try:
+            stored = await self._store.load_active(self._environment)
+        except Exception:
+            self._persistence_available = False
+            self._state_loaded = False
+            logger.error(
+                "load_shedding_authoritative_state_unavailable backend=%s",
+                self._store.backend,
+            )
             return
+        self._persistence_available = True
+        self._state_loaded = True
+        if stored is not None:
+            self._apply_stored_state(stored)
+
+    def _apply_stored_state(self, stored: StoredSheddingState) -> None:
+        level = SheddingLevel(stored.level)
         self._state = SheddingState(
             event_id=stored.event_id,
-            level=SheddingLevel(stored.level),
+            level=level,
             started_at=stored.started_at,
             reason_code=stored.reason_code,
             reasoning=stored.reasoning,
-            policy=stored.policy,
+            policy=policy_snapshot(level),
         )
 
     def current(self) -> SheddingState:
         return self._state
+
+    def persistence_status(self) -> PersistenceStatus:
+        return PersistenceStatus(
+            backend=self._store.backend,
+            durable=self._store.durable,
+            available=self._persistence_available,
+            state_loaded=self._state_loaded,
+        )
+
+    async def _refresh_authoritative(self) -> None:
+        try:
+            stored = await self._store.load_active(self._environment)
+        except Exception as exc:
+            self._persistence_available = False
+            raise AuditPersistenceUnavailableError(
+                "load-shedding audit persistence is unavailable"
+            ) from exc
+
+        self._persistence_available = True
+        self._state_loaded = True
+        if stored is not None:
+            self._apply_stored_state(stored)
+        elif self._state.level is not SheddingLevel.NORMAL:
+            raise TransitionConflictError("authoritative tier state is missing")
 
     async def transition(
         self,
@@ -75,8 +129,10 @@ class LoadSheddingController:
         correlation_id: UUID | None = None,
         prediction_id: UUID | None = None,
         trigger_snapshot_id: int | None = None,
+        demo_run_id: UUID | None = None,
     ) -> TransitionResult:
         async with self._lock:
+            await self._refresh_authoritative()
             if level == self._state.level:
                 return TransitionResult(changed=False, state=self._state)
 
@@ -96,9 +152,22 @@ class LoadSheddingController:
                 policy=policy_snapshot(level),
                 prediction_id=prediction_id,
                 trigger_snapshot_id=trigger_snapshot_id,
+                demo_run_id=demo_run_id,
             )
             # Persist first so an unaudited policy cannot silently become active.
-            await self._store.record_transition(transition)
+            try:
+                await self._store.record_transition(transition)
+            except TransitionConflictError:
+                await self._refresh_authoritative()
+                raise
+            except Exception as exc:
+                self._persistence_available = False
+                raise AuditPersistenceUnavailableError(
+                    "load-shedding audit persistence is unavailable"
+                ) from exc
+
+            self._persistence_available = True
+            self._state_loaded = True
             self._state = SheddingState(
                 event_id=event_id,
                 level=level,
@@ -115,6 +184,7 @@ class LoadSheddingController:
                         "event_id": str(event_id),
                         "correlation_id": str(transition.correlation_id),
                         "prediction_id": str(prediction_id) if prediction_id else None,
+                        "demo_run_id": str(demo_run_id) if demo_run_id else None,
                         "started_at": started_at.isoformat(),
                     },
                     default=str,

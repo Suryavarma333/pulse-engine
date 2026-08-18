@@ -1,6 +1,18 @@
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: ${PULSE_LOG_MAX_SIZE:-10m}
+    max-file: ${PULSE_LOG_MAX_FILES:-3}
+
+x-python-service: &python-service
+  init: true
+  restart: unless-stopped
+  logging: *bounded-logging
+
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-pulse}
       POSTGRES_USER: ${POSTGRES_USER:-pulse}
@@ -9,24 +21,29 @@ services:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
       timeout: 3s
-      retries: 15
+      retries: 20
+      start_period: 5s
     ports:
-      - "5432:5432"
+      - "${PULSE_POSTGRES_PORT:-5432}:5432"
     volumes:
       - pulse-postgres-data:/var/lib/postgresql/data
+    logging: *bounded-logging
 
   migrate:
     build:
       context: .
       dockerfile: demo_app/Dockerfile
     command: ["alembic", "-c", "db/alembic.ini", "upgrade", "head"]
+    restart: "no"
     environment:
       PULSE_DATABASE_URL: ${PULSE_DATABASE_URL:-postgresql+psycopg://pulse:pulse-local-only@postgres:5432/pulse}
     depends_on:
       postgres:
         condition: service_healthy
+    logging: *bounded-logging
 
   demo-app:
+    <<: *python-service
     build:
       context: .
       dockerfile: demo_app/Dockerfile
@@ -35,13 +52,168 @@ services:
       PULSE_DATABASE_URL: ${PULSE_DATABASE_URL:-postgresql+psycopg://pulse:pulse-local-only@postgres:5432/pulse}
       PULSE_CONTROL_TOKEN: ${PULSE_CONTROL_TOKEN:-local-demo-token}
       PULSE_METRICS_WINDOW_SECONDS: ${PULSE_METRICS_WINDOW_SECONDS:-10}
+      PULSE_METRICS_MAX_SAMPLES: ${PULSE_METRICS_MAX_SAMPLES:-20000}
       PULSE_NONCRITICAL_RATE_PER_SECOND: ${PULSE_NONCRITICAL_RATE_PER_SECOND:-2}
       PULSE_NONCRITICAL_RATE_BURST: ${PULSE_NONCRITICAL_RATE_BURST:-4}
     depends_on:
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     ports:
-      - "8000:8000"
+      - "${PULSE_DEMO_APP_PORT:-8000}:8000"
+
+  agent:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+      target: agent
+    environment:
+      PULSE_ENVIRONMENT: ${PULSE_ENVIRONMENT:-local}
+      PULSE_DATABASE_URL: ${PULSE_DATABASE_URL:-postgresql+psycopg://pulse:pulse-local-only@postgres:5432/pulse}
+      PULSE_DEMO_APP_BASE_URL: http://demo-app:8000
+      PULSE_CONTROL_TOKEN: ${PULSE_CONTROL_TOKEN:-local-demo-token}
+      PULSE_EXECUTION_MODE: ${PULSE_EXECUTION_MODE:-dry_run}
+      AWS_REGION: ${AWS_REGION:-}
+      PULSE_ASG_NAME: ${PULSE_ASG_NAME:-}
+      PULSE_CLOUDWATCH_CPU_ENABLED: ${PULSE_CLOUDWATCH_CPU_ENABLED:-false}
+      PULSE_CLOUDFRONT_DISTRIBUTION_ID: ${PULSE_CLOUDFRONT_DISTRIBUTION_ID:-}
+      PULSE_SQS_QUEUE_URL: ${PULSE_SQS_QUEUE_URL:-}
+      PULSE_SESSION_SIGNAL_URL: ${PULSE_SESSION_SIGNAL_URL:-}
+      PULSE_AWS_METRIC_PERIOD_SECONDS: ${PULSE_AWS_METRIC_PERIOD_SECONDS:-60}
+      PULSE_AWS_SDK_CONNECT_TIMEOUT_SECONDS: ${PULSE_AWS_SDK_CONNECT_TIMEOUT_SECONDS:-1}
+      PULSE_AWS_SDK_READ_TIMEOUT_SECONDS: ${PULSE_AWS_SDK_READ_TIMEOUT_SECONDS:-3}
+      PULSE_AWS_SDK_MAX_ATTEMPTS: ${PULSE_AWS_SDK_MAX_ATTEMPTS:-3}
+      PULSE_MAX_INSTANCE_CEILING: ${PULSE_MAX_INSTANCE_CEILING:-3}
+      PULSE_MINIMUM_DESIRED_CAPACITY: ${PULSE_MINIMUM_DESIRED_CAPACITY:-1}
+      PULSE_SIMULATED_DESIRED_CAPACITY: ${PULSE_SIMULATED_DESIRED_CAPACITY:-1}
+      PULSE_DASHBOARD_ORIGINS: ${PULSE_DASHBOARD_ORIGINS:-http://localhost:3000}
+      PULSE_METRIC_POLL_SECONDS: ${PULSE_METRIC_POLL_SECONDS:-2}
+      PULSE_BASELINE_WINDOW_SECONDS: ${PULSE_BASELINE_WINDOW_SECONDS:-60}
+      PULSE_MINIMUM_SAMPLES: ${PULSE_MINIMUM_SAMPLES:-5}
+      PULSE_ACCELERATION_THRESHOLD_RPS2: ${PULSE_ACCELERATION_THRESHOLD_RPS2:-2}
+      PULSE_ENTRY_RATIO_THRESHOLD: ${PULSE_ENTRY_RATIO_THRESHOLD:-1.5}
+      PULSE_EXIT_RATIO_THRESHOLD: ${PULSE_EXIT_RATIO_THRESHOLD:-1.15}
+      PULSE_CONFIDENCE_THRESHOLD: ${PULSE_CONFIDENCE_THRESHOLD:-0.65}
+      PULSE_CONFIRMATION_COUNT: ${PULSE_CONFIRMATION_COUNT:-3}
+      # Keep the deterministic local smoke tied to its simulated CPU comparator frame.
+      # Lower this value to demonstrate the optional raw-load comparator instead.
+      PULSE_REACTIVE_LOAD_THRESHOLD_RPS: ${PULSE_REACTIVE_LOAD_THRESHOLD_RPS:-100000}
+      PULSE_REACTIVE_CPU_THRESHOLD_PCT: ${PULSE_REACTIVE_CPU_THRESHOLD_PCT:-70}
+      PULSE_RECOVERY_LOW_THRESHOLD_RPS: ${PULSE_RECOVERY_LOW_THRESHOLD_RPS:-2}
+      PULSE_RECOVERY_CONFIRMATION_COUNT: ${PULSE_RECOVERY_CONFIRMATION_COUNT:-3}
+      PULSE_COOLDOWN_SECONDS: ${PULSE_COOLDOWN_SECONDS:-120}
+      PULSE_RECOVERY_DECREMENT_STEP: ${PULSE_RECOVERY_DECREMENT_STEP:-1}
+      PULSE_QUERY_DEFAULT_WINDOW_SECONDS: ${PULSE_QUERY_DEFAULT_WINDOW_SECONDS:-3600}
+      PULSE_QUERY_MAX_WINDOW_SECONDS: ${PULSE_QUERY_MAX_WINDOW_SECONDS:-86400}
+      PULSE_QUERY_MAX_ROWS: ${PULSE_QUERY_MAX_ROWS:-1000}
+      PULSE_PROVIDER_TIMEOUT_SECONDS: ${PULSE_PROVIDER_TIMEOUT_SECONDS:-1}
+      PULSE_SHEDDING_CONTROL_TIMEOUT_SECONDS: ${PULSE_SHEDDING_CONTROL_TIMEOUT_SECONDS:-2}
+      PULSE_RECONCILIATION_MIN_AGE_SECONDS: ${PULSE_RECONCILIATION_MIN_AGE_SECONDS:-30}
+      PULSE_RECONCILIATION_BATCH_SIZE: ${PULSE_RECONCILIATION_BATCH_SIZE:-50}
+      PULSE_MAINTENANCE_POLL_SECONDS: ${PULSE_MAINTENANCE_POLL_SECONDS:-5}
+      PULSE_RESPONSE_RETRY_MAX_ATTEMPTS: ${PULSE_RESPONSE_RETRY_MAX_ATTEMPTS:-5}
+      PULSE_RESPONSE_RETRY_BACKOFF_SECONDS: ${PULSE_RESPONSE_RETRY_BACKOFF_SECONDS:-5}
+      PULSE_SNAPSHOT_RETENTION_ENABLED: ${PULSE_SNAPSHOT_RETENTION_ENABLED:-true}
+      PULSE_SNAPSHOT_RETENTION_SECONDS: ${PULSE_SNAPSHOT_RETENTION_SECONDS:-604800}
+      PULSE_SNAPSHOT_RETENTION_BATCH_SIZE: ${PULSE_SNAPSHOT_RETENTION_BATCH_SIZE:-500}
+      PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS: ${PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS:-15}
+      PULSE_ORIGIN_SIGNAL_FRESHNESS_SECONDS: ${PULSE_ORIGIN_SIGNAL_FRESHNESS_SECONDS:-10}
+      PULSE_SIGNAL_BUFFER_CAPACITY: ${PULSE_SIGNAL_BUFFER_CAPACITY:-1000}
+      PULSE_SIMULATED_SIGNAL_MAX_TTL_SECONDS: ${PULSE_SIMULATED_SIGNAL_MAX_TTL_SECONDS:-300}
+      PULSE_SIMULATED_SIGNAL_FUTURE_TOLERANCE_SECONDS: ${PULSE_SIMULATED_SIGNAL_FUTURE_TOLERANCE_SECONDS:-5}
+      PULSE_REALTIME_WINDOW_MAX_SAMPLES: ${PULSE_REALTIME_WINDOW_MAX_SAMPLES:-1000}
+      PULSE_BASELINE_STRATEGY: ${PULSE_BASELINE_STRATEGY:-moving_average}
+      PULSE_EXPONENTIAL_SMOOTHING_ALPHA: ${PULSE_EXPONENTIAL_SMOOTHING_ALPHA:-0.35}
+      PULSE_FORECAST_HORIZON_SECONDS: ${PULSE_FORECAST_HORIZON_SECONDS:-30}
+      PULSE_RPS_PER_INSTANCE: ${PULSE_RPS_PER_INSTANCE:-25}
+      PULSE_SCHEDULED_POLL_SECONDS: ${PULSE_SCHEDULED_POLL_SECONDS:-5}
+      PULSE_SCHEDULED_LOOKAHEAD_SECONDS: ${PULSE_SCHEDULED_LOOKAHEAD_SECONDS:-86400}
+      PULSE_SCHEDULED_RAMP_STEPS: ${PULSE_SCHEDULED_RAMP_STEPS:-4}
+      PULSE_NEAR_EVENT_PROTECTION_SECONDS: ${PULSE_NEAR_EVENT_PROTECTION_SECONDS:-300}
+      PULSE_FEEDBACK_POLL_SECONDS: ${PULSE_FEEDBACK_POLL_SECONDS:-5}
+      PULSE_FEEDBACK_HORIZON_SECONDS: ${PULSE_FEEDBACK_HORIZON_SECONDS:-30}
+      PULSE_STATUS_CAPACITY_TIMEOUT_SECONDS: ${PULSE_STATUS_CAPACITY_TIMEOUT_SECONDS:-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      demo-app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    ports:
+      - "${PULSE_AGENT_PORT:-8100}:8100"
+
+  dashboard:
+    init: true
+    restart: unless-stopped
+    build:
+      context: dashboard
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_PULSE_API_URL: ${NEXT_PUBLIC_PULSE_API_URL:-http://localhost:8100}
+        NEXT_PUBLIC_PULSE_POLL_MS: ${NEXT_PUBLIC_PULSE_POLL_MS:-2000}
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    ports:
+      - "${PULSE_DASHBOARD_PORT:-3000}:3000"
+    logging: *bounded-logging
+
+  locust:
+    profiles: ["load"]
+    init: true
+    restart: "no"
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+      target: load
+    command:
+      - --scenario
+      - ${PULSE_SCENARIO:-sudden-spike}
+      - --baseline
+      - ${PULSE_BASELINE_TYPE:-pulse}
+      - --host
+      - http://demo-app:8000
+      - --agent-url
+      - http://agent:8100
+      - --demo-app-url
+      - http://demo-app:8000
+      - --control-token
+      - ${PULSE_CONTROL_TOKEN:-local-demo-token}
+      - --environment
+      - ${PULSE_ENVIRONMENT:-local}
+      - --execution-mode
+      - dry_run
+      - --output-directory
+      - /results
+      - --smoke
+    depends_on:
+      demo-app:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+    volumes:
+      - ./load_tests/results:/results
+    logging: *bounded-logging
 
 volumes:
   pulse-postgres-data:

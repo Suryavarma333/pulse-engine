@@ -1,0 +1,125 @@
+---
+description: Live Python, framework, testing, review, and entropy standards for Pulse.
+globs:
+alwaysApply: true
+---
+
+# Pulse coding standards
+
+```yaml
+codingStandards:
+  languages:
+    Python:
+      version: ">=3.11; CI and containers use 3.11"
+      conventions:
+        - Use type annotations for public functions, data structures, and service boundaries
+        - Prefer small modules with explicit dependencies over global mutable state
+        - Use UTC-aware datetimes for persisted and API timestamps
+        - Keep lines at or below 100 characters except generated migration expressions
+        - Use Ruff E, F, I, UP, B, and ASYNC rules from pyproject.toml
+    TypeScript:
+      version: "5.9.2 on Node.js 22"
+      conventions:
+        - Use strict TypeScript and typed API boundaries
+        - Keep dashboard data access read-only and reject unsupported DTO schema versions
+        - Use immutable React component inputs and bounded polling/history
+    Terraform:
+      version: ">=1.6.0; CI uses 1.9.8"
+      conventions:
+        - Format recursively and validate without a backend in CI
+        - Reuse explicit existing networking and scope IAM/resources to the bounded demo
+        - Never apply infrastructure or inject AWS credentials from CI
+
+  frameworks:
+    FastAPI:
+      - Use application factories and lifespan hooks for resources
+      - Validate request and response contracts with Pydantic
+      - Keep authenticated mutation routes separate from bounded operator reads and protected commerce routes
+      - Return structured, sanitized errors and truthful 503 readiness for mandatory dependency or worker failure
+    SQLAlchemy:
+      - Use SQLAlchemy 2 typed declarative mappings
+      - Access PostgreSQL asynchronously through session factories
+      - Apply schema changes through reversible Alembic migrations
+      - Persist idempotency claims and complete durable intent before external mutation
+    Next.js/React:
+      - Use Next.js standalone output and React functional components
+      - Consume pulse.snapshot.v1 through the shared explicit dashboard DTO contract
+      - Keep browser configuration free of control tokens and mutation credentials
+    Locust:
+      - Keep scenario seeds, endpoint weights, durations, users, and evidence reproducible
+      - Exercise scheduled Diwali and sudden-spike modes with bounded smoke settings in CI
+    AWS/Terraform:
+      - Keep dry-run client-free and live SetDesiredCapacity behind one direction/intent-aware adapter
+      - Enforce application and infrastructure ceilings, resource-scoped IAM, and operator-reviewed plan/apply
+
+  testing:
+    framework: pytest + pytest-cov + Vitest/Testing Library + Locust smoke + Terraform validation
+    runner: GitHub Actions plus .venv/bin/pytest and pnpm --dir dashboard test
+    location: tests, dashboard/tests, load_tests, and scripts/smoke_stack.sh
+    requirements:
+      - New business logic requires unit tests
+      - HTTP behavior, auth, DTOs, query bounds, and structured errors require API tests
+      - Critical checkout protection must be tested at every shedding tier
+      - Detection thresholds, cross-mode arbitration, cooldown direction, instance ceilings, dry-run, and recovery require deterministic tests
+      - Database migrations must pass PostgreSQL 16 base-to-head-to-base-to-head and live repository integration
+      - The production lifespan must prove initial/runtime database outage, truthful 503 degradation, worker survival, and in-process recovery
+      - Backend and dashboard must consume the same versioned snapshot fixture for API-to-UI contract coverage
+      - End-to-end scheduled and real-time surge modes require reproducible bounded Locust scenarios and defensible evidence
+      - Terraform format/init/validate and cost/IAM assertions must pass without apply or AWS credentials
+      - Secret, generated-artifact, whitespace, and conflict-marker scans must pass
+    coverage:
+      tool: pytest-cov
+      threshold: 85
+
+  naming:
+    commits: conventional
+    packages: lowercase snake_case matching the existing layout
+
+  review:
+    blockingSeverities:
+      - BLOCKER
+      - MAJOR
+    strictReview: true
+    dimensions:
+      - requirements-traceability
+      - architecture
+      - security
+      - performance
+      - scalability
+      - resilience
+      - maintainability
+      - entropy
+      - cost-safety
+    securityChecks:
+      - no secrets or credentials in source, examples, Terraform state, or committed environment files
+      - internal control endpoints require authentication
+      - AWS mutations enforce dry-run and maximum capacity safeguards
+      - only recovery can decrease capacity and validated scale-out bypasses provider cooldown
+      - dashboard stays read-only and rejects unknown snapshot schema versions
+      - persistence claims, outbox intent, retry/reconciliation, and worker readiness remain failure-safe
+      - Terraform IAM is least privilege and resource scoped where AWS permits
+      - do not edit .cursor kit files outside project-context
+
+  entropy:
+    enabled: true
+    policy: remove-on-touch
+    onChange:
+      - remove unused symbols and commented-out code
+      - delete superseded paths when replacing behavior
+      - remove orphaned tests and configuration keys
+    blockReview:
+      - new commented-out code without a tracked reason
+      - parallel superseded implementation left in the diff
+      - placeholder implementations presented as completed features
+    reference: .cursor/sdlc-system/workflow/entropy-management.md
+
+  documentation:
+    sdlcArtifacts: docs/sdlc/{workflowId}/
+    projectGuide: README.md
+    architecture:
+      - docs/architecture.md
+      - docs/state-machine.md
+      - docs/demo-runbook.md
+      - docs/results-template.md
+    stackRules: []
+```

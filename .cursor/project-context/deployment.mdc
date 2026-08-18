@@ -1,0 +1,57 @@
+---
+description: Live Pulse environments, deployment direction, rollback, CI, and observability.
+globs:
+alwaysApply: false
+---
+
+# Pulse deployment context
+
+```yaml
+deployment:
+  cloudProvider: aws
+
+  environments:
+    - name: local
+      purpose: Credential-free PostgreSQL, migration, protected app, agent/workers, dashboard, and deterministic surge demonstrations
+      runCommand: docker compose up --build --wait
+      deployMechanism: Docker Compose v2 with project-scoped PostgreSQL storage and service health gates
+    - name: ci
+      purpose: Pull-request and branch verification without AWS credentials or infrastructure apply
+      runCommand: GitHub Actions workflow .github/workflows/ci.yml
+      deployMechanism: Ephemeral GitHub-hosted runners, PostgreSQL 16 service containers, and isolated Docker Compose projects
+    - name: demo-aws
+      purpose: Optional operator-authorized low-cost demonstration using an IMDSv2 launch template, bounded EC2 Auto Scaling Group, comparator alarm, and runtime role
+      runCommand: terraform -chdir=infra plan -var-file=environments/demo.auto.tfvars -out=pulse-demo.tfplan
+      deployMechanism: Terraform against explicit existing VPC/subnets/security groups/AMI; reviewed apply and destroy are manual
+
+  strategy:
+    type: local Compose replacement plus optional rolling EC2 Auto Scaling Group
+    featureFlags:
+      - PULSE_EXECUTION_MODE defaults to dry_run in source, examples, Compose, and CI
+      - Live AWS scaling requires explicit live mode, region, ASG, bounded ceiling, credentials, and operator authorization
+      - Optional CloudWatch CPU, CloudFront, SQS, and session signals are disabled unless configured
+      - Dashboard receives only public API URL/poll interval and never a control token
+
+  rollback:
+    code: Revert the feature commit or pull request and rebuild the previous container image
+    database: Drain or reconcile pending actions/tier stages, then run the corresponding Alembic downgrade; revisions 0001 through 0004 remain structurally reversible and downgrade may discard new data
+    config: Restore previous environment values and rebuild Compose; for AWS, review a new Terraform plan or destroy the short-lived demo
+
+  ci:
+    provider: github-actions
+    workflow: .github/workflows/ci.yml
+    runtimeImages:
+      - ubuntu-latest
+      - Python 3.11 via actions/setup-python@v5
+      - Node.js 22 via actions/setup-node@v4
+      - pnpm 11.19.0 via pnpm/action-setup@v4
+      - PostgreSQL 16-alpine service containers
+      - Terraform 1.9.8 via hashicorp/setup-terraform@v3
+    prChecks: Python compile/Ruff/tests/coverage; PostgreSQL reversible migration/repository cycle; dashboard frozen install/tests/build; clean images/Compose/health/two Locust modes; Terraform format/init/validate/IAM-cost assertions; secret/generated-artifact/diff hygiene
+    watchCommand: gh pr checks {number} --repo Suryavarma333/pulse-engine
+
+  observability:
+    apm: Protected-app rolling /metrics/snapshot, agent /health and /api/v1/status, optional CloudWatch Pulse/Traffic comparator metrics and alarm
+    logs: Structured bounded container/application logs plus PostgreSQL audit records for runs, snapshots, predictions, actions/outbox, retries, scheduled events, and shedding intervals
+    readiness: Demo health requires durable tier state; agent health returns 503 for database, dependency-supervisor, or mandatory worker degradation and returns 200 after in-process recovery
+```

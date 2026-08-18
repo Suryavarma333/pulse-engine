@@ -1,0 +1,167 @@
+---
+description: Live Pulse user and control-plane flows for regression and safety validation.
+globs:
+alwaysApply: false
+---
+
+# Pulse business flows
+
+```yaml
+businessFlows:
+  - id: protected-checkout
+    name: Protected checkout remains available during a surge
+    description: A shopper submits checkout traffic while Pulse may be degrading non-critical work; checkout must remain normal and fast at every shedding tier.
+    entryPoints:
+      - POST /checkout
+    criticality: high
+
+  - id: recommendation-degradation
+    name: Recommendations degrade before critical traffic
+    description: Recommendations serve normally at level 0, disable at levels 1 and 2, and become emergency-rate-limited at level 3.
+    entryPoints:
+      - GET /recommendations
+    criticality: medium
+
+  - id: catalog-cache-fallback
+    name: Catalog uses a stale cache under sustained load
+    description: Catalog remains normal through level 1, serves a simplified stale response at level 2, and is rate-limited with cached fallback at level 3.
+    entryPoints:
+      - GET /catalog
+    criticality: medium
+
+  - id: shedding-control
+    name: Pulse changes the protected application's load-shedding tier
+    description: An authenticated internal caller changes a reversible tier with correlation, reasoning, and signal evidence; the transition is persisted before activation.
+    entryPoints:
+      - POST /internal/load-shedding
+    criticality: high
+
+  - id: protected-application-observability
+    name: Pulse reads protected-application health and traffic
+    description: The agent and operators read durable tier readiness, active endpoint policy, rolling request rate, latency, errors, concurrency, and fixed-cardinality endpoint counts.
+    entryPoints:
+      - GET /health
+      - GET /metrics/snapshot
+    criticality: high
+
+  - id: agent-readiness
+    name: Operators receive truthful dependency and worker readiness
+    description: The agent lifespan starts bounded workers and an always-running dependency supervisor; database or mandatory-worker failure returns 503 while task liveness and health details remain visible, and readiness returns to 200 after in-process recovery.
+    entryPoints:
+      - GET agent /health
+      - agent/app/main.py lifespan
+      - agent/app/workers/dependencies.py
+      - agent/app/workers/realtime.py
+    criticality: high
+
+  - id: simulated-leading-signal-ingestion
+    name: A deterministic run supplies bounded leading signals
+    description: An authenticated load driver submits expiring, run-attributed simulated edge, queue, session, login, or CPU readings; duplicates, expired frames, unavailable workers, and full buffers fail explicitly.
+    entryPoints:
+      - POST /internal/signals/simulated
+    criticality: high
+
+  - id: realtime-surge-detection
+    name: Pulse detects an unannounced acceleration surge
+    description: The realtime worker joins origin and optional leading signals, applies bounded baseline/acceleration/ratio/confidence confirmation with hysteresis, persists the snapshot and prediction, and submits immutable protection intent without dying during transient active-run database outages.
+    entryPoints:
+      - agent/app/workers/realtime.py
+      - agent/app/detection/realtime.py
+      - load_tests/scenarios/sudden_spike.py
+    criticality: high
+
+  - id: scheduled-prewarm
+    name: Pulse prewarms for a scheduled Diwali event
+    description: The scheduled worker loads active calendar events, validates timezone and UTC bounds, builds monotonic bounded ramp steps, persists predictions, audits obsolete restart points, and sends only the latest safe due target.
+    entryPoints:
+      - agent/app/workers/scheduled.py
+      - agent/app/services/ramp_planner.py
+      - scripts/seed_scheduled_events.py
+      - load_tests/scenarios/scheduled_diwali.py
+    criticality: high
+
+  - id: unified-protection-arbitration
+    name: Scheduled and realtime intent share one protected mutation path
+    description: A serialized cross-mode arbiter refreshes authoritative capacity and tier state, prefers protection over hold/recovery, retains maximum active requirements, double-clamps ceilings, durably claims the complete action/tier outbox, then invokes the sole ASG adapter and authenticated tier client.
+    entryPoints:
+      - agent/app/orchestration/response_pipeline.py
+      - agent/app/aws/autoscaling.py
+      - agent/app/services/shedding_client.py
+    criticality: high
+
+  - id: gradual-recovery
+    name: Pulse unwinds protection only after sustained low load
+    description: Distinct persisted low snapshots feed one recovery coordinator across realtime, scheduled, and maintenance callers; recovery alone may decrease one bounded capacity/tier step, respects floor and cooldown, and yields immediately to renewed protection.
+    entryPoints:
+      - agent/app/orchestration/recovery.py
+      - agent/app/orchestration/realtime_lifecycle.py
+      - agent/app/workers/maintenance.py
+    criticality: high
+
+  - id: durable-maintenance
+    name: Pulse reconciles and resumes incomplete control work
+    description: The bounded maintenance loop checks mandatory dependencies, reconciles unknown capacity outcomes, retries pending dispatch/tier stages with original correlation, resumes durable tier outbox work without repeating capacity, and prunes old snapshots in bounded batches.
+    entryPoints:
+      - agent/app/workers/maintenance.py
+      - agent/app/orchestration/reconciliation.py
+      - db/repositories/response_retries.py
+      - db/repositories/scaling_actions.py
+      - db/repositories/snapshots.py
+    criticality: high
+
+  - id: demo-run-evidence-lifecycle
+    name: Load runs persist reproducible configuration and results
+    description: An authenticated runner idempotently starts and completes a run with pair identity, workload seed/weights, server-sanitized effective settings, thresholds, execution mode, Locust summary, formula version, and record references; completed runs are evaluated from persisted evidence only.
+    entryPoints:
+      - POST /internal/demo-runs
+      - PATCH /internal/demo-runs/{run_id}
+      - load_tests/scripts/run_scenario.py
+      - load_tests/scripts/run_pair.py
+      - agent/app/services/feedback.py
+    criticality: high
+
+  - id: operator-dashboard
+    name: Operators inspect bounded control and result history
+    description: The read-only dashboard polls status and bounded paginated history, consumes explicit pulse.snapshot.v1 capacity fields with derived pending capacity, overlays predictions/actions/actuals, and never receives a control credential.
+    entryPoints:
+      - GET /api/v1/status
+      - GET /api/v1/snapshots
+      - GET /api/v1/predictions
+      - GET /api/v1/predictions/{prediction_id}
+      - GET /api/v1/scaling-actions
+      - GET /api/v1/load-shedding-events
+      - GET /api/v1/scheduled-events
+      - dashboard/components/Dashboard.tsx
+      - dashboard/lib/api.ts
+    criticality: high
+
+  - id: result-review-and-export
+    name: Operators review defensible surge outcomes
+    description: Result routes and the export script expose checkout latency/success, detection lead, provisioning efficiency, prediction/cost/recovery evidence, formulas, warnings, and bounded record references; missing evidence remains not_available rather than invented.
+    entryPoints:
+      - GET /api/v1/results/summary
+      - GET /api/v1/results/runs/{run_id}
+      - scripts/export_results.py
+      - docs/results-template.md
+    criticality: medium
+
+  - id: optional-live-aws-capacity
+    name: An operator enables bounded live ASG capacity control
+    description: After a reviewed Terraform plan/apply and explicit live configuration, Pulse reads the named ASG and invokes resource-scoped SetDesiredCapacity. Validated scale-out bypasses ASG cooldown, recovery scale-in honors it, and dry-run never constructs AWS clients.
+    entryPoints:
+      - infra/
+      - agent/app/aws/autoscaling.py
+      - agent/app/metrics/providers/cloudwatch.py
+      - agent/app/metrics/providers/sqs.py
+    criticality: high
+
+  - id: clean-stack-delivery-verification
+    name: GitHub Actions verifies the complete local platform
+    description: Push and PR workflows compile/lint/test Python with coverage, cycle PostgreSQL migrations, test/build the dashboard, build a credential-free Compose stack, run scheduled and sudden Locust smoke, validate Terraform/IAM/cost constraints, and scan secrets/artifacts/diff hygiene.
+    entryPoints:
+      - .github/workflows/ci.yml
+      - scripts/smoke_stack.sh
+      - scripts/verify_smoke_results.py
+      - scripts/secret_scan.py
+    criticality: high
+```
