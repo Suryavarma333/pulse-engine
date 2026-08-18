@@ -24,6 +24,7 @@ class AgentSettings(BaseModel):
         min_length=1,
     )
     demo_app_base_url: str = Field(default="http://demo-app:8000", min_length=1)
+    dashboard_origins: tuple[str, ...] = ("http://localhost:3000",)
     control_token: SecretStr = Field(default=SecretStr("local-demo-token"))
     execution_mode: ExecutionMode = ExecutionMode.DRY_RUN
     aws_region: str | None = Field(default=None, min_length=1, max_length=32)
@@ -88,6 +89,11 @@ class AgentSettings(BaseModel):
             )
         if self.execution_mode is ExecutionMode.LIVE and (not self.aws_region or not self.asg_name):
             raise ValueError("live execution requires aws_region and asg_name")
+        if not self.dashboard_origins or any(
+            not origin.startswith(("http://", "https://")) or "*" in origin
+            for origin in self.dashboard_origins
+        ):
+            raise ValueError("dashboard_origins must contain explicit HTTP(S) origins")
         return self
 
     @classmethod
@@ -146,6 +152,12 @@ class AgentSettings(BaseModel):
             "PULSE_STATUS_CAPACITY_TIMEOUT_SECONDS": "status_capacity_timeout_seconds",
         }
         payload = {field: values[key] for key, field in field_map.items() if key in values}
+        if "PULSE_DASHBOARD_ORIGINS" in values:
+            payload["dashboard_origins"] = tuple(
+                origin.strip()
+                for origin in values["PULSE_DASHBOARD_ORIGINS"].split(",")
+                if origin.strip()
+            )
         return cls.model_validate(payload)
 
 

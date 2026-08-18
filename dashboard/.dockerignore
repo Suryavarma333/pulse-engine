@@ -1,0 +1,7 @@
+node_modules
+.next
+coverage
+test-results
+.env*
+npm-debug.log*
+pnpm-debug.log*

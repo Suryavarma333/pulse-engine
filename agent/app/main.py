@@ -9,6 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
@@ -111,6 +112,14 @@ def create_app(
         title="Pulse predictive surge control plane",
         version="1.0.0",
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(configured.dashboard_origins),
+        allow_credentials=False,
+        allow_methods=["GET"],
+        allow_headers=["Accept", "Content-Type"],
+        max_age=600,
     )
 
     @app.exception_handler(HTTPException)

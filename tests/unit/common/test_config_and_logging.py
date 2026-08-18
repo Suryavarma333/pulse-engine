@@ -67,6 +67,7 @@ def test_agent_settings_parse_environment_without_exposing_token() -> None:
             "PULSE_SHEDDING_CONTROL_TIMEOUT_SECONDS": "3",
             "PULSE_RECONCILIATION_MIN_AGE_SECONDS": "45",
             "PULSE_RECONCILIATION_BATCH_SIZE": "25",
+            "PULSE_DASHBOARD_ORIGINS": "https://pulse.example,http://localhost:3000",
         }
     )
 
@@ -76,7 +77,16 @@ def test_agent_settings_parse_environment_without_exposing_token() -> None:
     assert settings.shedding_control_timeout_seconds == 3
     assert settings.reconciliation_min_age_seconds == 45
     assert settings.reconciliation_batch_size == 25
+    assert settings.dashboard_origins == (
+        "https://pulse.example",
+        "http://localhost:3000",
+    )
     assert "runtime-only-token" not in repr(settings)
+
+
+def test_agent_settings_reject_wildcard_dashboard_origin() -> None:
+    with pytest.raises(ValidationError, match="explicit HTTP"):
+        AgentSettings(dashboard_origins=("*",))
 
 
 def test_json_formatter_emits_machine_readable_context() -> None:

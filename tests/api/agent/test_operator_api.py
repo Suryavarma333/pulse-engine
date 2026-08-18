@@ -22,6 +22,17 @@ def test_health_and_status_are_operational_and_secret_free(app_fixture) -> None:
     assert "test-control-token" not in response.text
 
 
+def test_dashboard_origin_can_read_but_is_never_credentialed(app_fixture) -> None:
+    response = app_fixture.client.get(
+        "/api/v1/status",
+        headers={"Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "access-control-allow-credentials" not in response.headers
+
+
 def test_all_bounded_history_and_result_endpoints_return_page_contract(app_fixture) -> None:
     start = (NOW - timedelta(minutes=1)).isoformat()
     end = (NOW + timedelta(minutes=1)).isoformat()

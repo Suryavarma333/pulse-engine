@@ -1,0 +1,22 @@
+aws_region = "us-east-1"
+name_prefix = "pulse-demo"
+
+# Replace these non-live examples with existing resources from your own account.
+ami_id             = "ami-0123456789abcdef0"
+vpc_id             = "vpc-0123456789abcdef0"
+subnet_ids         = ["subnet-0123456789abcdef0"]
+security_group_ids = ["sg-0123456789abcdef0"]
+
+instance_type               = "t3.micro"
+minimum_capacity            = 1
+desired_capacity            = 1
+maximum_capacity            = 3
+default_cooldown_seconds    = 120
+associate_public_ip_address = false
+
+# Optional existing queue only; leave null to omit SQS permissions.
+sqs_queue_arn = null
+
+tags = {
+  Owner = "replace-with-your-name"
+}

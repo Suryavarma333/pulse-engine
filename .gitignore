@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 dist/
 build/
@@ -18,3 +19,15 @@ dashboard/test-results/
 .pnpm-store/
 .cursor/sdlc-system/state/
 .cursor/sdlc-system/workflow-artifacts/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
