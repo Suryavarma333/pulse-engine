@@ -29,6 +29,14 @@ class AgentSettings(BaseModel):
     execution_mode: ExecutionMode = ExecutionMode.DRY_RUN
     aws_region: str | None = Field(default=None, min_length=1, max_length=32)
     asg_name: str | None = Field(default=None, min_length=1, max_length=255)
+    cloudwatch_cpu_enabled: bool = False
+    cloudfront_distribution_id: str | None = Field(default=None, min_length=1, max_length=255)
+    sqs_queue_url: str | None = Field(default=None, min_length=1, max_length=2_048)
+    session_signal_url: str | None = Field(default=None, min_length=1, max_length=2_048)
+    aws_metric_period_seconds: int = Field(default=60, ge=10, le=3_600)
+    aws_sdk_connect_timeout_seconds: float = Field(default=1.0, gt=0, le=30)
+    aws_sdk_read_timeout_seconds: float = Field(default=3.0, gt=0, le=60)
+    aws_sdk_max_attempts: int = Field(default=3, ge=1, le=10)
     global_instance_ceiling: int = Field(default=3, ge=1, le=100)
     minimum_desired_capacity: int = Field(default=1, ge=0, le=100)
     simulated_desired_capacity: int = Field(default=1, ge=0, le=100)
@@ -51,6 +59,12 @@ class AgentSettings(BaseModel):
     shedding_control_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     reconciliation_min_age_seconds: int = Field(default=30, ge=0, le=86_400)
     reconciliation_batch_size: int = Field(default=50, ge=1, le=1_000)
+    maintenance_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    response_retry_max_attempts: int = Field(default=5, ge=1, le=20)
+    response_retry_backoff_seconds: int = Field(default=5, ge=1, le=3_600)
+    snapshot_retention_enabled: bool = True
+    snapshot_retention_seconds: int = Field(default=604_800, ge=300, le=31_536_000)
+    snapshot_retention_batch_size: int = Field(default=500, ge=1, le=10_000)
     optional_signal_freshness_seconds: int = Field(default=15, ge=1, le=3_600)
     origin_signal_freshness_seconds: int = Field(default=10, ge=1, le=3_600)
     signal_buffer_capacity: int = Field(default=1_000, ge=1, le=100_000)
@@ -89,6 +103,18 @@ class AgentSettings(BaseModel):
             )
         if self.execution_mode is ExecutionMode.LIVE and (not self.aws_region or not self.asg_name):
             raise ValueError("live execution requires aws_region and asg_name")
+        if self.execution_mode is not ExecutionMode.LIVE and (
+            self.cloudwatch_cpu_enabled
+            or self.cloudfront_distribution_id
+            or self.sqs_queue_url
+        ):
+            raise ValueError("AWS signal providers require explicit live execution mode")
+        if self.sqs_queue_url and not self.sqs_queue_url.startswith("https://"):
+            raise ValueError("sqs_queue_url must use HTTPS")
+        if self.session_signal_url and not self.session_signal_url.startswith(
+            ("http://", "https://")
+        ):
+            raise ValueError("session_signal_url must be an HTTP(S) URL")
         if not self.dashboard_origins or any(
             not origin.startswith(("http://", "https://")) or "*" in origin
             for origin in self.dashboard_origins
@@ -107,6 +133,14 @@ class AgentSettings(BaseModel):
             "PULSE_EXECUTION_MODE": "execution_mode",
             "AWS_REGION": "aws_region",
             "PULSE_ASG_NAME": "asg_name",
+            "PULSE_CLOUDWATCH_CPU_ENABLED": "cloudwatch_cpu_enabled",
+            "PULSE_CLOUDFRONT_DISTRIBUTION_ID": "cloudfront_distribution_id",
+            "PULSE_SQS_QUEUE_URL": "sqs_queue_url",
+            "PULSE_SESSION_SIGNAL_URL": "session_signal_url",
+            "PULSE_AWS_METRIC_PERIOD_SECONDS": "aws_metric_period_seconds",
+            "PULSE_AWS_SDK_CONNECT_TIMEOUT_SECONDS": "aws_sdk_connect_timeout_seconds",
+            "PULSE_AWS_SDK_READ_TIMEOUT_SECONDS": "aws_sdk_read_timeout_seconds",
+            "PULSE_AWS_SDK_MAX_ATTEMPTS": "aws_sdk_max_attempts",
             "PULSE_MAX_INSTANCE_CEILING": "global_instance_ceiling",
             "PULSE_MINIMUM_DESIRED_CAPACITY": "minimum_desired_capacity",
             "PULSE_SIMULATED_DESIRED_CAPACITY": "simulated_desired_capacity",
@@ -129,6 +163,12 @@ class AgentSettings(BaseModel):
             "PULSE_SHEDDING_CONTROL_TIMEOUT_SECONDS": "shedding_control_timeout_seconds",
             "PULSE_RECONCILIATION_MIN_AGE_SECONDS": "reconciliation_min_age_seconds",
             "PULSE_RECONCILIATION_BATCH_SIZE": "reconciliation_batch_size",
+            "PULSE_MAINTENANCE_POLL_SECONDS": "maintenance_poll_seconds",
+            "PULSE_RESPONSE_RETRY_MAX_ATTEMPTS": "response_retry_max_attempts",
+            "PULSE_RESPONSE_RETRY_BACKOFF_SECONDS": "response_retry_backoff_seconds",
+            "PULSE_SNAPSHOT_RETENTION_ENABLED": "snapshot_retention_enabled",
+            "PULSE_SNAPSHOT_RETENTION_SECONDS": "snapshot_retention_seconds",
+            "PULSE_SNAPSHOT_RETENTION_BATCH_SIZE": "snapshot_retention_batch_size",
             "PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS": "optional_signal_freshness_seconds",
             "PULSE_ORIGIN_SIGNAL_FRESHNESS_SECONDS": "origin_signal_freshness_seconds",
             "PULSE_SIGNAL_BUFFER_CAPACITY": "signal_buffer_capacity",
@@ -151,7 +191,18 @@ class AgentSettings(BaseModel):
             "PULSE_FEEDBACK_HORIZON_SECONDS": "feedback_horizon_seconds",
             "PULSE_STATUS_CAPACITY_TIMEOUT_SECONDS": "status_capacity_timeout_seconds",
         }
-        payload = {field: values[key] for key, field in field_map.items() if key in values}
+        blank_optional = {
+            "AWS_REGION",
+            "PULSE_ASG_NAME",
+            "PULSE_CLOUDFRONT_DISTRIBUTION_ID",
+            "PULSE_SQS_QUEUE_URL",
+            "PULSE_SESSION_SIGNAL_URL",
+        }
+        payload = {
+            field: values[key]
+            for key, field in field_map.items()
+            if key in values and (key not in blank_optional or values[key].strip())
+        }
         if "PULSE_DASHBOARD_ORIGINS" in values:
             payload["dashboard_origins"] = tuple(
                 origin.strip()

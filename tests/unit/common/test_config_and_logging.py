@@ -20,6 +20,10 @@ def test_agent_settings_default_to_bounded_dry_run() -> None:
     assert settings.shedding_control_timeout_seconds == 2
     assert settings.reconciliation_min_age_seconds == 30
     assert settings.reconciliation_batch_size == 50
+    assert settings.snapshot_retention_seconds == 604_800
+    assert settings.snapshot_retention_batch_size == 500
+    assert settings.aws_sdk_read_timeout_seconds == 3
+    assert settings.aws_sdk_max_attempts == 3
     assert "local-demo-token" not in repr(settings)
 
 
@@ -33,6 +37,18 @@ def test_live_mode_requires_explicit_target_and_region() -> None:
         asg_name="pulse-demo",
     )
     assert live.execution_mode is ExecutionMode.LIVE
+
+
+def test_aws_signal_sources_require_live_mode_and_valid_urls() -> None:
+    with pytest.raises(ValidationError, match="AWS signal providers require"):
+        AgentSettings(cloudwatch_cpu_enabled=True)
+    with pytest.raises(ValidationError, match="HTTPS"):
+        AgentSettings(
+            execution_mode=ExecutionMode.LIVE,
+            aws_region="ap-south-1",
+            asg_name="pulse-demo",
+            sqs_queue_url="http://unsafe.example/queue",
+        )
 
 
 @pytest.mark.parametrize(
@@ -82,6 +98,23 @@ def test_agent_settings_parse_environment_without_exposing_token() -> None:
         "http://localhost:3000",
     )
     assert "runtime-only-token" not in repr(settings)
+
+
+def test_blank_compose_optional_provider_values_remain_unconfigured() -> None:
+    settings = AgentSettings.from_environment(
+        {
+            "PULSE_EXECUTION_MODE": "dry_run",
+            "AWS_REGION": "",
+            "PULSE_ASG_NAME": "",
+            "PULSE_CLOUDFRONT_DISTRIBUTION_ID": "",
+            "PULSE_SQS_QUEUE_URL": "",
+            "PULSE_SESSION_SIGNAL_URL": "",
+        }
+    )
+
+    assert settings.aws_region is None
+    assert settings.asg_name is None
+    assert settings.cloudfront_distribution_id is None
 
 
 def test_agent_settings_reject_wildcard_dashboard_origin() -> None:

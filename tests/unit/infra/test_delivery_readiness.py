@@ -65,3 +65,14 @@ def test_there_is_one_response_pipeline_and_one_capacity_mutation_path() -> None
     )
     assert sources.count("class ResponsePipeline:") == 1
     assert sources.count("self._client.set_desired_capacity") == 1
+
+
+def test_production_assembly_registers_runtime_recovery_without_parallel_resources() -> None:
+    main = (ROOT / "agent/app/main.py").read_text()
+
+    assert main.count("AgentRuntime.create(settings)") == 1
+    assert "SystemClock()" not in main
+    assert "ActionReconciler(" in main
+    assert "ControlMaintenanceWorker(" in main
+    assert "decision_handler=realtime_lifecycle.handle" in main
+    assert "workers=[realtime, scheduled, feedback, maintenance]" in main

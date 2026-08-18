@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from botocore.config import Config
+from botocore.exceptions import (
+    ConnectionClosedError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
+
 from common.contracts import CapacityDecision, CapacityState
 from common.enums import ActionStatus, ExecutionMode, ProviderStatus
 from common.time import ensure_utc
@@ -38,6 +45,9 @@ class AutoScalingCapacityAdapter:
         global_ceiling: int,
         simulated_capacity: int,
         client: Any | None = None,
+        connect_timeout_seconds: float = 1.0,
+        read_timeout_seconds: float = 3.0,
+        max_attempts: int = 3,
     ) -> None:
         if not target_resource:
             raise ValueError("target_resource is required")
@@ -47,6 +57,10 @@ class AutoScalingCapacityAdapter:
             raise ValueError("simulated_capacity must be within the global ceiling")
         if execution_mode is ExecutionMode.LIVE and not region:
             raise ValueError("live execution requires an AWS region")
+        if connect_timeout_seconds <= 0 or read_timeout_seconds <= 0:
+            raise ValueError("AWS SDK timeouts must be positive")
+        if not 1 <= max_attempts <= 10:
+            raise ValueError("AWS SDK attempts must be between 1 and 10")
 
         self.execution_mode = execution_mode
         self.target_resource = target_resource
@@ -56,7 +70,18 @@ class AutoScalingCapacityAdapter:
         if execution_mode is ExecutionMode.LIVE and self._client is None:
             import boto3
 
-            self._client = boto3.client("autoscaling", region_name=region)
+            self._client = boto3.client(
+                "autoscaling",
+                region_name=region,
+                config=Config(
+                    connect_timeout=connect_timeout_seconds,
+                    read_timeout=read_timeout_seconds,
+                    retries={
+                        "mode": "standard",
+                        "total_max_attempts": max_attempts,
+                    },
+                ),
+            )
 
     async def read_capacity(self, *, observed_at: datetime) -> CapacityObservation:
         observed_at = ensure_utc(observed_at, field_name="observed_at")
@@ -141,12 +166,26 @@ class AutoScalingCapacityAdapter:
                     provider_request_id=current.provider_request_id,
                 )
             assert self._client is not None
-            response = await asyncio.to_thread(
-                self._client.set_desired_capacity,
-                AutoScalingGroupName=self.target_resource,
-                DesiredCapacity=target,
-                HonorCooldown=True,
-            )
+            try:
+                response = await asyncio.to_thread(
+                    self._client.set_desired_capacity,
+                    AutoScalingGroupName=self.target_resource,
+                    DesiredCapacity=target,
+                    HonorCooldown=True,
+                )
+            except Exception as exc:
+                return CapacityDecision(
+                    requested=requested_capacity,
+                    applied=None,
+                    ceiling=ceiling,
+                    execution_mode=self.execution_mode,
+                    status=(
+                        ActionStatus.UNKNOWN
+                        if _is_ambiguous_mutation_error(exc)
+                        else ActionStatus.FAILED
+                    ),
+                    sanitized_error=sanitize_provider_error(exc),
+                )
             return CapacityDecision(
                 requested=requested_capacity,
                 applied=target,
@@ -177,6 +216,18 @@ def sanitize_provider_error(exc: Exception) -> str:
         message = str(exc) or "provider request failed"
     sanitized = _SECRET_PATTERN.sub(r"\1=[REDACTED]", f"{code}: {message}")
     return sanitized[:2_000]
+
+
+def _is_ambiguous_mutation_error(exc: Exception) -> bool:
+    return isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionClosedError,
+            EndpointConnectionError,
+            ReadTimeoutError,
+        ),
+    )
 
 
 def _request_id(response: dict[str, Any]) -> str | None:

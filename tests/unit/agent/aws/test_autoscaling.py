@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
+import boto3
+from botocore.exceptions import ReadTimeoutError
+
 from agent.app.aws.autoscaling import AutoScalingCapacityAdapter
 from common.enums import ActionStatus, ExecutionMode, ProviderStatus
 
@@ -129,4 +132,53 @@ def test_live_mode_sanitizes_throttling_and_does_not_retry() -> None:
     assert decision.applied is None
     assert "Throttling" in decision.sanitized_error
     assert "secret-value" not in decision.sanitized_error
+    assert len(client.set_calls) == 1
+
+
+def test_live_default_client_has_bounded_timeout_and_retry_configuration(
+    monkeypatch,
+) -> None:
+    captured = {}
+    client = FakeAutoScalingClient()
+
+    def create_client(service, **kwargs):
+        captured["service"] = service
+        captured.update(kwargs)
+        return client
+
+    monkeypatch.setattr(boto3, "client", create_client)
+    AutoScalingCapacityAdapter(
+        execution_mode=ExecutionMode.LIVE,
+        target_resource="pulse-asg",
+        region="ap-south-1",
+        global_ceiling=3,
+        simulated_capacity=1,
+        connect_timeout_seconds=2,
+        read_timeout_seconds=5,
+        max_attempts=2,
+    )
+
+    config = captured["config"]
+    assert captured["service"] == "autoscaling"
+    assert config.connect_timeout == 2
+    assert config.read_timeout == 5
+    assert config.retries["total_max_attempts"] == 2
+    assert config.retries["mode"] == "standard"
+
+
+def test_live_mutation_timeout_is_unknown_until_reconciled() -> None:
+    client = FakeAutoScalingClient(
+        desired=1,
+        failure=ReadTimeoutError(endpoint_url="https://autoscaling.example.test"),
+    )
+    decision = asyncio.run(
+        adapter(mode=ExecutionMode.LIVE, client=client).execute(
+            requested_capacity=2,
+            effective_ceiling=3,
+            observed_at=NOW,
+        )
+    )
+
+    assert decision.status is ActionStatus.UNKNOWN
+    assert decision.applied is None
     assert len(client.set_calls) == 1

@@ -25,6 +25,12 @@ class SheddingControlResult:
     endpoint_policies: dict[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class DemoControlStatus:
+    ready: bool
+    level: SheddingLevel
+
+
 class DemoAppSheddingClient:
     """Authenticated, server-side client for the demo app's authoritative tier control."""
 
@@ -96,6 +102,28 @@ class DemoAppSheddingClient:
             },
         )
 
+    async def read_status(self) -> DemoControlStatus:
+        """Verify the authoritative tier control dependency without mutating it."""
+
+        try:
+            response = await self._client.get("/health")
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise SheddingControlError(
+                f"demo app health request failed: {type(exc).__name__}",
+                retryable=True,
+            ) from exc
+        if response.status_code >= 400:
+            raise SheddingControlError(
+                f"demo app health is unavailable: {_error_code(response)}",
+                retryable=response.status_code >= 500,
+                status_code=response.status_code,
+            )
+        body = response.json()
+        return DemoControlStatus(
+            ready=bool(body.get("ready")),
+            level=SheddingLevel(int(body.get("load_shedding", {}).get("level", 0))),
+        )
+
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -110,6 +138,7 @@ def _error_code(response: httpx.Response) -> str:
 
 
 __all__ = [
+    "DemoControlStatus",
     "DemoAppSheddingClient",
     "SheddingControlError",
     "SheddingControlResult",

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from agent.app.orchestration.response_pipeline import ResponsePipeline
-from agent.app.orchestration.state_machine import ControlStateMachine
+from agent.app.orchestration.state_machine import ControlEvent, ControlStateMachine
 from agent.app.services.shedding_client import (
     SheddingControlError,
     SheddingControlResult,
@@ -61,6 +61,7 @@ class FakeRepository:
         self.unresolved = False
         self.fail_update = False
         self.control_errors: list[str] = []
+        self.retry_requests = []
 
     async def has_unresolved(self, *, target_resource: str) -> bool:
         assert target_resource == "pulse-asg"
@@ -135,6 +136,15 @@ class FakeCapacityAdapter:
         )
 
 
+class FakeRetryRepository:
+    def __init__(self, repository: FakeRepository) -> None:
+        self.repository = repository
+
+    async def schedule_shedding(self, command, *, level, now, error_message):
+        self.repository.retry_requests.append((command, level, now, error_message))
+        return self
+
+
 class FakeSheddingClient:
     def __init__(self, order: list[str], *, fail: bool = False) -> None:
         self.order = order
@@ -166,6 +176,7 @@ def pipeline(*, adapter_status=ActionStatus.CAPPED, shedding_fail=False):
         shedding_client=shedding,
         state_machine=states,
         global_ceiling=3,
+        retry_repository=FakeRetryRepository(repository),
     )
     return response, repository, adapter, shedding, states, order
 
@@ -338,7 +349,10 @@ def test_shedding_failure_is_sanitized_audited_and_preserves_checkout_boundary()
     )
     assert shedding.calls == 1
     assert result.shedding_error == "shedding_control_failed:SheddingControlError"
+    assert result.shedding_retry_scheduled is True
     assert repository.control_errors == [result.shedding_error]
+    assert repository.retry_requests[0][0].idempotency_key == "realtime:test:1"
+    assert repository.retry_requests[0][1] is SheddingLevel.DISABLE_RECOMMENDATIONS
     assert states.state is ControlState.FAILURE_SAFE
 
 
@@ -367,3 +381,14 @@ def test_failure_safe_state_audits_hold_and_performs_no_external_call() -> None:
     assert adapter.calls == 0
     assert shedding.calls == 0
     assert states.state is ControlState.FAILURE_SAFE
+
+
+def test_verified_dependencies_restore_failure_safe_and_elevated_restart_state() -> None:
+    response, _, _, _, states, _ = pipeline()
+    states.transition(ControlEvent.FAULT)
+    response.recover_dependencies(target=ControlState.WATCH)
+    assert states.state is ControlState.WATCH
+
+    restarted, _, _, _, restarted_states, _ = pipeline()
+    restarted.recover_dependencies(target=ControlState.RECOVERY)
+    assert restarted_states.state is ControlState.RECOVERY

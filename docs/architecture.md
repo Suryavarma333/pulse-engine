@@ -20,6 +20,7 @@ flowchart TB
     Command["Immutable response command"]
     Pipeline["Single response pipeline"]
     Recovery["Sustained-low recovery"]
+    Maintenance["Reconciliation / retries / retention"]
     Adapter["Single dry-run-aware ASG adapter"]
     Feedback["Formula-versioned evaluator"]
     API["Bounded operator API"]
@@ -37,6 +38,8 @@ flowchart TB
   Pipeline --> DB
   Adapter -. "explicit live mode only" .-> AWS
   Recovery --> Pipeline
+  Maintenance --> Pipeline
+  Maintenance --> DB
   DB --> Feedback --> DB
   Browser --> API --> DB
 ```
@@ -61,9 +64,9 @@ in-memory policy. The browser never uses that boundary.
 
 1. The demo application records request count/rate, concurrency, latency percentiles, errors, and
    fixed-cardinality endpoint results without external I/O on the protected path.
-2. The collector polls origin metrics and merges optional simulated or AWS-shaped edge, queue,
-   session/login, and CPU readings. Missing optional sources reduce confidence; a missing origin
-   causes a safe hold.
+2. The collector polls origin metrics and merges configured simulated, CloudWatch CPU/CloudFront,
+   SQS, and HTTP session/login readings. Omitted, stale, and failed sources remain explicit in
+   status; missing optional sources reduce confidence while a missing origin causes a safe hold.
 3. The real-time detector uses actual sample spacing, a moving/exponential baseline, first-order
    change, acceleration, ratio, leading agreement, freshness, confirmation, and hysteresis.
 4. The scheduled worker validates UTC instants plus IANA timezone metadata and claims stable ramp
@@ -72,8 +75,9 @@ in-memory policy. The browser never uses that boundary.
    ceiling, tier request, evidence, reason, and recovery plan.
 6. The pipeline claims the action, clamps capacity, uses the sole adapter, records the outcome,
    then applies any protection increase. Failed/unknown scale-in never lowers protection.
-7. Recovery requires an exact low-load count and cooldown, decreases capacity by a bounded step,
-   unwinds one tier at a time, and is interrupted by renewed high load.
+7. Every real-time cycle feeds WATCH/protection evidence to the same state machine. Recovery
+   requires an exact low-load count and cooldown, decreases capacity by a bounded step, unwinds
+   one tier at a time, and is interrupted by renewed high load.
 8. The evaluator joins the run, snapshots, predictions, actions, and shedding intervals. It stores
    only defensible metrics and explicit warnings for missing evidence.
 
@@ -89,12 +93,15 @@ erDiagram
   SURGE_PREDICTIONS ||--o{ SURGE_PREDICTION_POINTS : contains
   SURGE_PREDICTIONS ||--o{ SCALING_ACTIONS : triggers
   SURGE_PREDICTIONS ||--o{ LOAD_SHEDDING_EVENTS : triggers
+  SURGE_PREDICTIONS ||--o{ RESPONSE_RETRIES : retries
   TRAFFIC_SNAPSHOTS ||--o{ SURGE_PREDICTIONS : triggers
 ```
 
 Foreign keys preserve audit history with nullable references where deletion is allowed. Typed
 columns support time-bounded graph/result queries; JSONB is reserved for bounded signal/config
-evidence. Alembic revisions `20260818_0001` and `20260818_0002` both have downgrade paths.
+evidence. Alembic revisions `20260818_0001`, `20260818_0002`, and the runtime-reliability
+revision `20260818_0003` all have downgrade paths. The last revision stores bounded response and
+tier retries separately from scaling-action capacity claims.
 
 ## Failure boundaries
 
@@ -102,7 +109,8 @@ evidence. Alembic revisions `20260818_0001` and `20260818_0002` both have downgr
 - Provider success with outcome-write failure: state becomes failure-safe/unknown; reconciliation
   reads provider state and blocks scale-in meanwhile.
 - Provider failure: audited; protection may increase, but cannot decrease.
-- Tier-control failure: prior application policy stays active and the sanitized error is audited.
+- Tier-control/dispatch failure: prior application policy stays active; a bounded retry is stored
+  separately from the capacity claim and reuses the same correlation.
 - Optional signal failure: visible provider health and lower confidence; origin processing continues.
 - Agent failure: the protected app continues serving its last durable tier; checkout stays normal.
 

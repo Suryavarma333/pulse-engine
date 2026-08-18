@@ -73,6 +73,8 @@ class DetectorCheckpoint:
 class RealtimeDecision:
     snapshot: TrafficSnapshot
     trigger: bool
+    qualifying: bool
+    recovered: bool
     reason_code: str
     reasoning: str
     confidence: float
@@ -140,6 +142,15 @@ class RealtimeDetector:
         self._active = checkpoint.active
         self._prediction_emitted = checkpoint.prediction_emitted
         self._comparator_crossed_at = checkpoint.comparator_crossed_at
+
+    def reset(self) -> None:
+        """Start a fresh bounded detector epoch for a new attributed run."""
+
+        self._samples.clear()
+        self._confirmations = 0
+        self._active = False
+        self._prediction_emitted = False
+        self._comparator_crossed_at = None
 
     def evaluate(self, signals: CollectedSignals) -> RealtimeDecision:
         observed_at = ensure_utc(signals.observed_at, field_name="observed_at")
@@ -307,6 +318,8 @@ class RealtimeDetector:
         return RealtimeDecision(
             snapshot=snapshot,
             trigger=trigger,
+            qualifying=core_qualifies,
+            recovered=recovered,
             reason_code=reason_code,
             reasoning=reasoning,
             confidence=confidence,

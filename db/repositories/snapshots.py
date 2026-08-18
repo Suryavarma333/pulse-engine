@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from common.contracts import QueryWindow, validate_evidence
@@ -62,3 +63,24 @@ class SnapshotRepository:
         )
         async with self._session_factory() as session:
             return await session.scalar(statement)
+
+    async def delete_expired(self, *, cutoff: datetime, limit: int) -> int:
+        """Delete one bounded oldest-first snapshot batch without cascading audit rows."""
+
+        cutoff = ensure_utc(cutoff, field_name="cutoff")
+        if not 1 <= limit <= 10_000:
+            raise ValueError("retention batch limit must be between 1 and 10000")
+        candidate_ids = (
+            select(TrafficSnapshot.id)
+            .where(TrafficSnapshot.observed_at < cutoff)
+            .order_by(TrafficSnapshot.observed_at, TrafficSnapshot.id)
+            .limit(limit)
+        )
+        async with self._session_factory() as session, session.begin():
+            ids = list((await session.scalars(candidate_ids)).all())
+            if not ids:
+                return 0
+            result = await session.execute(
+                delete(TrafficSnapshot).where(TrafficSnapshot.id.in_(ids))
+            )
+            return int(result.rowcount or 0)

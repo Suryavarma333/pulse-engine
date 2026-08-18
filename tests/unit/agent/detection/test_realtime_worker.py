@@ -111,6 +111,7 @@ def make_worker(
     commands,
     *,
     active_run_provider=None,
+    retry_scheduler=None,
     command_handler_error: bool = False,
 ) -> RealtimeWorker:
     detector = RealtimeDetector(
@@ -157,6 +158,8 @@ def make_worker(
         poll_seconds=1,
         command_handler=command_handler,
         active_run_provider=active_run_provider,
+        retry_scheduler=retry_scheduler,
+        environment="test",
     )
 
 
@@ -165,12 +168,22 @@ class ActiveRunRecorder:
         self.run_id = run_id
         self.comparator_at = None
 
-    async def current_demo_run_id(self):
+    async def current_demo_run_id(self, *, environment):
+        assert environment == "test"
         return self.run_id
 
     async def record_reactive_comparator(self, *, run_id, crossed_at):
         assert run_id == self.run_id
         self.comparator_at = crossed_at
+        return self
+
+
+class RetryRecorder:
+    def __init__(self) -> None:
+        self.commands = []
+
+    async def schedule_dispatch(self, command, *, now, error_message):
+        self.commands.append((command, now, error_message))
         return self
 
 
@@ -273,6 +286,7 @@ def test_command_handoff_failure_preserves_the_persisted_prediction() -> None:
     commands = []
     clock = ManualClock()
     writer = MemoryPredictionWriter(events)
+    retry_scheduler = RetryRecorder()
     collector = FakeCollector([sample(0, 10), sample(1, 10), sample(2, 25)], events)
     worker = make_worker(
         collector,
@@ -280,6 +294,7 @@ def test_command_handoff_failure_preserves_the_persisted_prediction() -> None:
         clock,
         events,
         commands,
+        retry_scheduler=retry_scheduler,
         command_handler_error=True,
     )
 
@@ -298,6 +313,8 @@ def test_command_handoff_failure_preserves_the_persisted_prediction() -> None:
     assert result.prediction is not None
     assert len(writer.predictions) == 1
     assert commands == []
+    assert retry_scheduler.commands[0][0] is result.command
+    assert retry_scheduler.commands[0][2] == "command_handoff_failed:RuntimeError"
     assert worker.health.detail == "command_handoff_failed:RuntimeError"
 
 
@@ -344,3 +361,55 @@ def test_later_reactive_comparator_is_persisted_on_the_early_prediction() -> Non
     )
     assert run_recorder.comparator_at == crossed_at
     assert events.count("comparator") == 1
+
+
+def test_run_rotation_resets_samples_comparator_and_persistence_marker() -> None:
+    events = []
+    commands = []
+    clock = ManualClock()
+    writer = MemoryPredictionWriter(events)
+    reactive_run_id = uuid4()
+    pulse_run_id = uuid4()
+    run_recorder = ActiveRunRecorder(reactive_run_id)
+    collector = FakeCollector(
+        [
+            sample(0, 10, demo_run_id=reactive_run_id),
+            sample(1, 10, demo_run_id=reactive_run_id),
+            sample(2, 60, demo_run_id=reactive_run_id),
+            sample(3, 10, demo_run_id=pulse_run_id),
+            sample(4, 10, demo_run_id=pulse_run_id),
+            sample(5, 25, demo_run_id=pulse_run_id),
+            sample(6, 60, demo_run_id=pulse_run_id),
+        ],
+        events,
+    )
+    worker = make_worker(
+        collector,
+        writer,
+        clock,
+        events,
+        commands,
+        active_run_provider=run_recorder,
+    )
+
+    async def run():
+        for second in (0, 1, 2):
+            clock.current = NOW + timedelta(seconds=second)
+            await worker.run_once()
+        run_recorder.run_id = pulse_run_id
+        for second in (3, 4, 5, 6):
+            clock.current = NOW + timedelta(seconds=second)
+            await worker.run_once()
+
+    asyncio.run(run())
+
+    assert [item.demo_run_id for item in writer.predictions] == [
+        reactive_run_id,
+        pulse_run_id,
+    ]
+    assert writer.predictions[0].reactive_comparator_crossed_at == NOW + timedelta(
+        seconds=2
+    )
+    assert writer.predictions[1].reactive_comparator_crossed_at == NOW + timedelta(
+        seconds=6
+    )

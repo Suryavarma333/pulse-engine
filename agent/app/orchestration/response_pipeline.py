@@ -54,6 +54,17 @@ class ActionRepository(Protocol):
         effective_ceiling: int | None = None,
     ) -> Any: ...
 
+
+class RetryRepository(Protocol):
+    async def schedule_shedding(
+        self,
+        command: ResponseCommand,
+        *,
+        level: SheddingLevel,
+        now: datetime,
+        error_message: str,
+    ) -> Any: ...
+
     async def has_unresolved(self, *, target_resource: str) -> bool: ...
 
     async def update_outcome(self, **values: Any) -> Any: ...
@@ -74,6 +85,7 @@ class ResponseExecution:
     duplicate: bool = False
     shedding: SheddingControlResult | None = None
     shedding_error: str | None = None
+    shedding_retry_scheduled: bool = False
     outcome_persistence_error: str | None = None
 
 
@@ -88,6 +100,7 @@ class ResponsePipeline:
         shedding_client: SheddingClient,
         state_machine: ControlStateMachine,
         global_ceiling: int,
+        retry_repository: RetryRepository | None = None,
     ) -> None:
         if not 1 <= global_ceiling <= 100:
             raise ValueError("global_ceiling must be between 1 and 100")
@@ -98,6 +111,7 @@ class ResponsePipeline:
         self._shedding = shedding_client
         self._states = state_machine
         self._global_ceiling = global_ceiling
+        self._retries = retry_repository
 
     async def execute(
         self,
@@ -197,6 +211,7 @@ class ResponsePipeline:
 
         shedding_result: SheddingControlResult | None = None
         shedding_error: str | None = None
+        shedding_retry_scheduled = False
         requested_level = command.requested_shedding_level
         if requested_level is not None and requested_level != current_shedding_level:
             increasing_protection = requested_level > current_shedding_level
@@ -209,12 +224,22 @@ class ResponsePipeline:
                 except SheddingControlError as exc:
                     shedding_error = f"shedding_control_failed:{type(exc).__name__}"
                     await self._record_control_error(command, shedding_error)
-                    self._states.transition(ControlEvent.FAULT)
+                    try:
+                        if exc.retryable and self._retries is not None:
+                            await self._retries.schedule_shedding(
+                                command,
+                                level=requested_level,
+                                now=requested_at,
+                                error_message=shedding_error,
+                            )
+                            shedding_retry_scheduled = True
+                    finally:
+                        self._states.transition(ControlEvent.FAULT)
             else:
                 shedding_error = "shedding_reduction_held_after_capacity_failure"
                 await self._record_control_error(command, shedding_error)
 
-        if decision.status is ActionStatus.FAILED:
+        if decision.status in {ActionStatus.FAILED, ActionStatus.UNKNOWN}:
             self._states.transition(ControlEvent.FAULT)
         return ResponseExecution(
             action=action,
@@ -222,7 +247,36 @@ class ResponsePipeline:
             state=self._states.state,
             shedding=shedding_result,
             shedding_error=shedding_error,
+            shedding_retry_scheduled=shedding_retry_scheduled,
         )
+
+    async def retry_shedding(
+        self,
+        command: ResponseCommand,
+        *,
+        level: SheddingLevel,
+    ) -> SheddingControlResult:
+        """Retry only a persisted tier operation; never repeat the capacity mutation."""
+
+        try:
+            return await self._shedding.apply(command=command, level=level)
+        except SheddingControlError:
+            self._states.transition(ControlEvent.FAULT)
+            raise
+
+    def recover_dependencies(self, *, target: ControlState) -> None:
+        """Exit failure-safe only after the maintenance worker verifies dependencies."""
+
+        if self._states.state is ControlState.NORMAL and target in {
+            ControlState.PROTECT,
+            ControlState.RECOVERY,
+        }:
+            self._states.transition(ControlEvent.FAULT)
+        if self._states.state is ControlState.FAILURE_SAFE:
+            self._states.transition(
+                ControlEvent.DEPENDENCIES_RECOVERED,
+                recovered_target=target,
+            )
 
     async def audit_hold(
         self,

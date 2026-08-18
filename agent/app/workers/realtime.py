@@ -15,14 +15,25 @@ from common.enums import ProviderStatus
 from common.time import Clock
 
 CommandHandler = Callable[[ResponseCommand], Awaitable[None]]
+DecisionHandler = Callable[[RealtimeDecision, ResponseCommand | None], Awaitable[bool]]
 
 
 class ActiveRunProvider(Protocol):
-    async def current_demo_run_id(self) -> UUID | None: ...
+    async def current_demo_run_id(self, *, environment: str) -> UUID | None: ...
 
     async def record_reactive_comparator(
         self, *, run_id: UUID, crossed_at: datetime
     ) -> object | None: ...
+
+
+class CommandRetryScheduler(Protocol):
+    async def schedule_dispatch(
+        self,
+        command: ResponseCommand,
+        *,
+        now: datetime,
+        error_message: str,
+    ) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +59,10 @@ class RealtimeWorker:
         clock: Clock,
         poll_seconds: float,
         command_handler: CommandHandler | None = None,
+        decision_handler: DecisionHandler | None = None,
         active_run_provider: ActiveRunProvider | None = None,
+        retry_scheduler: CommandRetryScheduler | None = None,
+        environment: str = "local",
     ) -> None:
         if poll_seconds <= 0:
             raise ValueError("poll_seconds must be positive")
@@ -58,7 +72,12 @@ class RealtimeWorker:
         self._clock = clock
         self._poll_seconds = poll_seconds
         self._command_handler = command_handler
+        self._decision_handler = decision_handler
         self._active_run_provider = active_run_provider
+        self._retry_scheduler = retry_scheduler
+        self._environment = environment
+        self._active_run_id: UUID | None = None
+        self._active_command: ResponseCommand | None = None
         self._recorded_comparator_at: datetime | None = None
         self._cycle_lock = asyncio.Lock()
         self._health = WorkerHealth(
@@ -84,10 +103,17 @@ class RealtimeWorker:
         async with self._cycle_lock:
             now = self._clock.now()
             demo_run_id = (
-                await self._active_run_provider.current_demo_run_id()
+                await self._active_run_provider.current_demo_run_id(
+                    environment=self._environment
+                )
                 if self._active_run_provider is not None
                 else None
             )
+            if demo_run_id != self._active_run_id:
+                self._detector.reset()
+                self._recorded_comparator_at = None
+                self._active_command = None
+                self._active_run_id = demo_run_id
             try:
                 signals = await self._collector.collect(now=now, demo_run_id=demo_run_id)
             except RequiredSignalUnavailable:
@@ -118,6 +144,7 @@ class RealtimeWorker:
                         decision.candidate, trigger_snapshot_id=snapshot.id
                     )
                     command = prediction.command
+                    self._active_command = command
                 except Exception as exc:
                     self._detector.restore(checkpoint)
                     self._set_health(
@@ -131,6 +158,28 @@ class RealtimeWorker:
                     try:
                         await self._command_handler(command)
                     except Exception as exc:
+                        if self._retry_scheduler is not None:
+                            try:
+                                await self._retry_scheduler.schedule_dispatch(
+                                    command,
+                                    now=now,
+                                    error_message=(
+                                        f"command_handoff_failed:{type(exc).__name__}"
+                                    ),
+                                )
+                            except Exception as retry_exc:
+                                self._set_health(
+                                    ProviderStatus.UNAVAILABLE,
+                                    "command_retry_persistence_failed:"
+                                    f"{type(retry_exc).__name__}",
+                                )
+                                return WorkerCycleResult(
+                                    decision,
+                                    prediction,
+                                    command,
+                                    True,
+                                    "command_retry_persistence_failed",
+                                )
                         self._set_health(
                             ProviderStatus.DEGRADED,
                             f"command_handoff_failed:{type(exc).__name__}",
@@ -138,6 +187,22 @@ class RealtimeWorker:
                         return WorkerCycleResult(
                             decision, prediction, command, True, "command_handoff_failed"
                         )
+
+            if self._decision_handler is not None:
+                try:
+                    fully_recovered = await self._decision_handler(
+                        decision, self._active_command
+                    )
+                    if fully_recovered:
+                        self._active_command = None
+                except Exception as exc:
+                    self._set_health(
+                        ProviderStatus.DEGRADED,
+                        f"control_lifecycle_failed:{type(exc).__name__}",
+                    )
+                    return WorkerCycleResult(
+                        decision, prediction, command, True, "control_lifecycle_failed"
+                    )
 
             comparator_error = await self._record_comparator(
                 decision,
@@ -204,4 +269,11 @@ class RealtimeWorker:
             return f"comparator_persistence_failed:{type(exc).__name__}"
 
 
-__all__ = ["ActiveRunProvider", "CommandHandler", "RealtimeWorker", "WorkerCycleResult"]
+__all__ = [
+    "ActiveRunProvider",
+    "CommandHandler",
+    "CommandRetryScheduler",
+    "DecisionHandler",
+    "RealtimeWorker",
+    "WorkerCycleResult",
+]

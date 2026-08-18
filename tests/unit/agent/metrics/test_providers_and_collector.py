@@ -109,6 +109,7 @@ def test_collector_requires_origin_and_omits_stale_or_failed_optional_values() -
             ),
         ],
         MemorySnapshotWriter(),
+        omitted_providers=("cloudfront", "sqs"),
     )
 
     result = asyncio.run(collector.collect(now=NOW))
@@ -120,6 +121,10 @@ def test_collector_requires_origin_and_omits_stale_or_failed_optional_values() -
         "provider_error:RuntimeError"
     )
     assert "credential detail" not in str(result.provider_health)
+    assert result.provider_health["cloudfront"]["details"] == {
+        "reason": "not_configured"
+    }
+    assert collector.provider_configuration["sqs"]["status"] == "unavailable"
 
 
 @pytest.mark.parametrize(

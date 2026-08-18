@@ -14,6 +14,8 @@ class DemoAppModel(BaseModel):
 
 
 class CheckoutRequest(DemoAppModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, allow_inf_nan=False)
+
     cart_id: str = Field(default="demo-cart", min_length=1, max_length=100)
     item_count: int = Field(default=1, ge=1, le=100)
 

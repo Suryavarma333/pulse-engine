@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from scripts.verify_compose_overrides import OVERRIDES, verify_environment
+
 ROOT = Path(__file__).parents[3]
 INFRA = ROOT / "infra"
 
@@ -33,7 +35,36 @@ def test_compose_dependency_order_health_and_bounded_defaults() -> None:
     assert "max-size: ${PULSE_LOG_MAX_SIZE:-10m}" in compose
     assert "max-file: ${PULSE_LOG_MAX_FILES:-3}" in compose
     assert "pulse-postgres-data:/var/lib/postgresql/data" in compose
+    assert "PULSE_POSTGRES_VOLUME" not in compose
+    for setting in (
+        "PULSE_QUERY_MAX_ROWS",
+        "PULSE_OPTIONAL_SIGNAL_FRESHNESS_SECONDS",
+        "PULSE_BASELINE_STRATEGY",
+        "PULSE_REACTIVE_CPU_THRESHOLD_PCT",
+        "PULSE_FORECAST_HORIZON_SECONDS",
+        "PULSE_RPS_PER_INSTANCE",
+        "PULSE_SCHEDULED_LOOKAHEAD_SECONDS",
+        "PULSE_FEEDBACK_HORIZON_SECONDS",
+        "PULSE_RECONCILIATION_MIN_AGE_SECONDS",
+        "PULSE_STATUS_CAPACITY_TIMEOUT_SECONDS",
+        "PULSE_SNAPSHOT_RETENTION_SECONDS",
+        "PULSE_AWS_SDK_READ_TIMEOUT_SECONDS",
+    ):
+        assert f"{setting}: ${{{setting}:-" in compose
     assert compose.count("healthcheck:") >= 4
+
+
+def test_resolved_compose_overrides_and_volume_identity_contract() -> None:
+    verify_environment(
+        {
+            "services": {"agent": {"environment": dict(OVERRIDES)}},
+            "volumes": {
+                "pulse-postgres-data": {
+                    "name": "pulse-config-contract_pulse-postgres-data"
+                }
+            },
+        }
+    )
 
 
 def test_runtime_images_are_non_root_and_load_driver_is_on_demand() -> None:

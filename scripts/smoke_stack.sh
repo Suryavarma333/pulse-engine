@@ -7,7 +7,6 @@ results_dir="load_tests/results"
 database_url="postgresql+psycopg://pulse:pulse-local-only@postgres:5432/pulse"
 
 export COMPOSE_PROJECT_NAME="${project_name}"
-export PULSE_POSTGRES_VOLUME="${project_name}-postgres-data"
 export PULSE_CONTROL_TOKEN="${control_token}"
 
 cleanup() {

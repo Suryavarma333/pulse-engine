@@ -7,6 +7,8 @@ from datetime import timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+import httpx
+from botocore.config import Config
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,11 +21,25 @@ from agent.app.aws.autoscaling import AutoScalingCapacityAdapter
 from agent.app.config import AgentSettings
 from agent.app.detection.realtime import RealtimeDetector
 from agent.app.metrics.collector import CompositeSignalCollector
+from agent.app.metrics.providers.cloudwatch import (
+    CloudFrontSignalProvider,
+    CloudWatchCpuSignalProvider,
+)
 from agent.app.metrics.providers.demo_app import DemoAppSignalProvider
+from agent.app.metrics.providers.sessions import (
+    SessionLoginSignalProvider,
+    http_session_fetcher,
+)
 from agent.app.metrics.providers.simulated import (
     SimulatedSignalBuffer,
     SimulatedSignalProvider,
 )
+from agent.app.metrics.providers.sqs import SqsSignalProvider
+from agent.app.orchestration.realtime_lifecycle import (
+    RealtimeControlLifecycle,
+    RealtimeControlObservation,
+)
+from agent.app.orchestration.reconciliation import ActionReconciler
 from agent.app.orchestration.recovery import (
     RecoveryCoordinator,
     RecoveryObservation,
@@ -31,20 +47,33 @@ from agent.app.orchestration.recovery import (
 )
 from agent.app.orchestration.response_pipeline import ResponsePipeline
 from agent.app.orchestration.state_machine import ControlEvent, ControlStateMachine
+from agent.app.runtime import AgentRuntime
 from agent.app.services.feedback import FeedbackEvaluator, FeedbackService, FeedbackWorker
 from agent.app.services.predictions import PredictionService
 from agent.app.services.ramp_planner import RampPlanner
 from agent.app.services.shedding_client import DemoAppSheddingClient
+from agent.app.workers.maintenance import (
+    ControlMaintenanceWorker,
+    DependencyReadiness,
+    MaintenanceObservation,
+)
 from agent.app.workers.realtime import RealtimeWorker
 from agent.app.workers.scheduled import ScheduledControlObservation, ScheduledWorker
 from common.contracts import RecoveryPlan, ResponseCommand
-from common.enums import ControlState, PredictionMode, ResponseIntent, SheddingLevel
-from common.time import Clock, SystemClock
+from common.enums import (
+    ControlState,
+    ExecutionMode,
+    PredictionMode,
+    ResponseIntent,
+    SheddingLevel,
+)
+from common.time import Clock
 from db.repositories.base import RepositoryLimits
 from db.repositories.demo_runs import DemoRunRepository
 from db.repositories.evaluation import EvaluationDataRepository
 from db.repositories.operator import OperatorQueryRepository
 from db.repositories.predictions import PredictionRepository
+from db.repositories.response_retries import ResponseRetryRepository
 from db.repositories.scaling_actions import ScalingActionRepository
 from db.repositories.scheduled_events import ScheduledEventRepository
 from db.repositories.snapshots import SnapshotRepository
@@ -66,6 +95,8 @@ class AgentComponents:
     database: Database | None = None
     shedding_client: DemoAppSheddingClient | None = None
     db_ready: bool = True
+    runtime: AgentRuntime | None = None
+    provider_configuration: dict[str, dict[str, Any]] | None = None
 
 
 def create_app(
@@ -105,6 +136,8 @@ def create_app(
                 await asyncio.gather(*tasks, return_exceptions=True)
             if assembled.shedding_client is not None:
                 await assembled.shedding_client.close()
+            if assembled.runtime is not None:
+                await assembled.runtime.close()
             if assembled.database is not None:
                 await assembled.database.dispose()
 
@@ -179,8 +212,107 @@ def create_app(
     return app
 
 
+def build_signal_providers(
+    settings: AgentSettings,
+    runtime: AgentRuntime,
+    *,
+    aws_client_factory: Any | None = None,
+) -> tuple[list[Any], tuple[str, ...]]:
+    """Assemble opt-in providers without touching AWS in local dry-run mode."""
+
+    providers: list[Any] = [
+        DemoAppSignalProvider(
+            settings.demo_app_base_url,
+            timeout_seconds=settings.provider_timeout_seconds,
+            freshness_limit_seconds=settings.origin_signal_freshness_seconds,
+        ),
+        SimulatedSignalProvider(
+            runtime.simulated_signals,
+            timeout_seconds=min(0.5, settings.provider_timeout_seconds),
+            freshness_limit_seconds=settings.optional_signal_freshness_seconds,
+        ),
+    ]
+    omitted = {"cloudwatch_cpu", "cloudfront", "sqs", "sessions"}
+    if settings.execution_mode is ExecutionMode.LIVE:
+        factory = aws_client_factory or _default_aws_client
+        sdk_config = Config(
+            connect_timeout=settings.aws_sdk_connect_timeout_seconds,
+            read_timeout=settings.aws_sdk_read_timeout_seconds,
+            retries={
+                "mode": "standard",
+                "total_max_attempts": settings.aws_sdk_max_attempts,
+            },
+        )
+        cloudwatch = None
+        if settings.cloudwatch_cpu_enabled or settings.cloudfront_distribution_id:
+            cloudwatch = factory(
+                "cloudwatch",
+                region_name=settings.aws_region,
+                config=sdk_config,
+            )
+        if settings.cloudwatch_cpu_enabled:
+            assert cloudwatch is not None and settings.asg_name is not None
+            providers.append(
+                CloudWatchCpuSignalProvider(
+                    cloudwatch,
+                    settings.asg_name,
+                    timeout_seconds=settings.provider_timeout_seconds,
+                    freshness_limit_seconds=settings.optional_signal_freshness_seconds,
+                    period_seconds=settings.aws_metric_period_seconds,
+                )
+            )
+            omitted.remove("cloudwatch_cpu")
+        if settings.cloudfront_distribution_id:
+            assert cloudwatch is not None
+            providers.append(
+                CloudFrontSignalProvider(
+                    cloudwatch,
+                    settings.cloudfront_distribution_id,
+                    timeout_seconds=settings.provider_timeout_seconds,
+                    freshness_limit_seconds=settings.optional_signal_freshness_seconds,
+                    period_seconds=settings.aws_metric_period_seconds,
+                )
+            )
+            omitted.remove("cloudfront")
+        if settings.sqs_queue_url:
+            sqs = factory(
+                "sqs",
+                region_name=settings.aws_region,
+                config=sdk_config,
+            )
+            providers.append(
+                SqsSignalProvider(
+                    sqs,
+                    settings.sqs_queue_url,
+                    timeout_seconds=settings.provider_timeout_seconds,
+                    freshness_limit_seconds=settings.optional_signal_freshness_seconds,
+                )
+            )
+            omitted.remove("sqs")
+    if settings.session_signal_url:
+        client = runtime.manage(
+            httpx.AsyncClient(timeout=settings.provider_timeout_seconds)
+        )
+        providers.append(
+            SessionLoginSignalProvider(
+                http_session_fetcher(client, settings.session_signal_url),
+                timeout_seconds=settings.provider_timeout_seconds,
+                freshness_limit_seconds=settings.optional_signal_freshness_seconds,
+            )
+        )
+        omitted.remove("sessions")
+    return providers, tuple(sorted(omitted))
+
+
+def _default_aws_client(service_name: str, **kwargs: Any) -> Any:
+    import boto3
+
+    return boto3.client(service_name, **kwargs)
+
+
 async def _assemble(settings: AgentSettings) -> AgentComponents:
-    clock = SystemClock()
+    runtime = AgentRuntime.create(settings)
+    clock = runtime.clock
     database = Database(settings.database_url.get_secret_value())
     db_ready = await _database_ready(database)
     limits = RepositoryLimits(
@@ -190,6 +322,7 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
     snapshots = SnapshotRepository(database.session_factory, limits=limits)
     predictions = PredictionRepository(database.session_factory, limits=limits)
     actions = ScalingActionRepository(database.session_factory, limits=limits)
+    response_retries = ResponseRetryRepository(database.session_factory)
     scheduled_events = ScheduledEventRepository(database.session_factory, limits=limits)
     demo_runs = DemoRunRepository(database.session_factory, limits=limits)
     operator = OperatorQueryRepository(database.session_factory, limits=limits)
@@ -201,11 +334,7 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         evaluator=FeedbackEvaluator(),
         max_rows=settings.query_max_rows,
     )
-    buffer = SimulatedSignalBuffer(
-        capacity=settings.signal_buffer_capacity,
-        max_ttl_seconds=settings.simulated_signal_max_ttl_seconds,
-        future_tolerance_seconds=settings.simulated_signal_future_tolerance_seconds,
-    )
+    buffer = runtime.simulated_signals
     target_resource = settings.asg_name or "local-simulated-asg"
     capacity = AutoScalingCapacityAdapter(
         execution_mode=settings.execution_mode,
@@ -213,6 +342,9 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         region=settings.aws_region,
         global_ceiling=settings.global_instance_ceiling,
         simulated_capacity=settings.simulated_desired_capacity,
+        connect_timeout_seconds=settings.aws_sdk_connect_timeout_seconds,
+        read_timeout_seconds=settings.aws_sdk_read_timeout_seconds,
+        max_attempts=settings.aws_sdk_max_attempts,
     )
     state_machine = ControlStateMachine()
     recovery_plan = RecoveryPlan(
@@ -233,21 +365,13 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         shedding_client=shedding,
         state_machine=state_machine,
         global_ceiling=settings.global_instance_ceiling,
+        retry_repository=response_retries,
     )
+    providers, omitted_providers = build_signal_providers(settings, runtime)
     collector = CompositeSignalCollector(
-        [
-            DemoAppSignalProvider(
-                settings.demo_app_base_url,
-                timeout_seconds=settings.provider_timeout_seconds,
-                freshness_limit_seconds=settings.origin_signal_freshness_seconds,
-            ),
-            SimulatedSignalProvider(
-                buffer,
-                timeout_seconds=min(0.5, settings.provider_timeout_seconds),
-                freshness_limit_seconds=settings.optional_signal_freshness_seconds,
-            ),
-        ],
+        providers,
         snapshots,
+        omitted_providers=omitted_providers,
     )
     prediction_service = PredictionService(
         predictions,
@@ -259,11 +383,10 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
     async def observation() -> ScheduledControlObservation:
         capacity_state = await capacity.read_capacity(observed_at=clock.now())
         snapshot = await snapshots.latest(settings.environment)
+        demo_status = await shedding.read_status()
         return ScheduledControlObservation(
             current_capacity=capacity_state.state.desired,
-            current_shedding_level=SheddingLevel(
-                0 if snapshot is None else snapshot.load_shedding_level
-            ),
+            current_shedding_level=demo_status.level,
             demo_run_id=await demo_runs.current_demo_run_id(
                 environment=settings.environment
             ),
@@ -281,6 +404,25 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
             requested_at=clock.now(),
         )
 
+    recovery_coordinator = RecoveryCoordinator(state_machine)
+    recovery_worker = RecoveryWorker(
+        coordinator=recovery_coordinator,
+        response_pipeline=response,
+    )
+
+    async def realtime_observation() -> RealtimeControlObservation:
+        observed = await observation()
+        return RealtimeControlObservation(
+            observed_at=clock.now(),
+            current_capacity=observed.current_capacity,
+            current_shedding_level=observed.current_shedding_level,
+        )
+
+    realtime_lifecycle = RealtimeControlLifecycle(
+        state_machine=state_machine,
+        recovery_worker=recovery_worker,
+        observation_provider=realtime_observation,
+    )
     realtime = RealtimeWorker(
         collector=collector,
         detector=RealtimeDetector.from_settings(settings),
@@ -288,12 +430,10 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         clock=clock,
         poll_seconds=settings.metric_poll_seconds,
         command_handler=command_handler,
+        decision_handler=realtime_lifecycle.handle,
         active_run_provider=demo_runs,
-    )
-    recovery_coordinator = RecoveryCoordinator(state_machine)
-    recovery_worker = RecoveryWorker(
-        coordinator=recovery_coordinator,
-        response_pipeline=response,
+        retry_scheduler=response_retries,
+        environment=settings.environment,
     )
 
     async def scheduled_recovery(
@@ -362,6 +502,107 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         clock=clock,
         horizon_seconds=settings.feedback_horizon_seconds,
     )
+    reconciler = ActionReconciler(
+        repository=actions,
+        capacity_adapter=capacity,
+        minimum_age_seconds=settings.reconciliation_min_age_seconds,
+        batch_size=settings.reconciliation_batch_size,
+    )
+
+    async def maintenance_observation() -> MaintenanceObservation:
+        observed = await observation()
+        return MaintenanceObservation(
+            current_capacity=observed.current_capacity,
+            current_shedding_level=observed.current_shedding_level,
+            request_rate_rps=observed.request_rate_rps or 0.0,
+        )
+
+    async def maintenance_recovery(observed: MaintenanceObservation) -> None:
+        template = ResponseCommand(
+            idempotency_key=f"runtime:{settings.environment}:recovery-template",
+            correlation_id=uuid5(
+                NAMESPACE_URL,
+                f"pulse-runtime-recovery:{settings.environment}",
+            ),
+            mode=PredictionMode.REALTIME,
+            intent=ResponseIntent.RECOVER,
+            target_resource=target_resource,
+            requested_desired_capacity=observed.current_capacity,
+            maximum_ceiling=settings.global_instance_ceiling,
+            reason_code="runtime_recovery",
+            reasoning=(
+                "Maintenance resumed bounded recovery from authoritative runtime state"
+            ),
+            signal_evidence={"source": "maintenance"},
+            recovery_plan=recovery_plan,
+        )
+        await recovery_worker.run_once(
+            RecoveryObservation(
+                observed_at=clock.now(),
+                request_rate_rps=observed.request_rate_rps,
+                high_load=(
+                    observed.request_rate_rps > recovery_plan.low_threshold_rps
+                ),
+                current_capacity=observed.current_capacity,
+                current_shedding_level=observed.current_shedding_level,
+            ),
+            command_template=template,
+        )
+
+    async def dependency_probe() -> DependencyReadiness:
+        if not await _database_ready(database):
+            return DependencyReadiness(False, ControlState.WATCH, "database_unavailable")
+        try:
+            capacity_state = await capacity.read_capacity(observed_at=clock.now())
+        except Exception as exc:
+            return DependencyReadiness(
+                False,
+                ControlState.WATCH,
+                f"capacity_unavailable:{type(exc).__name__}",
+            )
+        try:
+            demo_status = await shedding.read_status()
+        except Exception as exc:
+            return DependencyReadiness(
+                False,
+                ControlState.WATCH,
+                f"demo_control_unavailable:{type(exc).__name__}",
+            )
+        if not demo_status.ready:
+            return DependencyReadiness(False, ControlState.WATCH, "demo_control_not_ready")
+        snapshot = await snapshots.latest(settings.environment)
+        request_rate = 0.0 if snapshot is None else snapshot.origin_request_rate_rps
+        elevated = (
+            capacity_state.state.desired > settings.minimum_desired_capacity
+            or demo_status.level > SheddingLevel.NORMAL
+        )
+        if elevated and request_rate > recovery_plan.low_threshold_rps:
+            target = ControlState.PROTECT
+        elif elevated:
+            target = ControlState.RECOVERY
+        else:
+            target = ControlState.WATCH
+        return DependencyReadiness(True, target, "dependencies_ready")
+
+    maintenance = ControlMaintenanceWorker(
+        reconciler=reconciler,
+        retries=response_retries,
+        actions=actions,
+        response_pipeline=response,
+        observation_provider=maintenance_observation,
+        dependency_probe=dependency_probe,
+        retention_store=snapshots,
+        target_resource=target_resource,
+        clock=clock,
+        poll_seconds=settings.maintenance_poll_seconds,
+        batch_size=settings.reconciliation_batch_size,
+        retry_max_attempts=settings.response_retry_max_attempts,
+        retry_backoff_seconds=settings.response_retry_backoff_seconds,
+        retention_enabled=settings.snapshot_retention_enabled,
+        retention_seconds=settings.snapshot_retention_seconds,
+        retention_batch_size=settings.snapshot_retention_batch_size,
+        recovery_handler=maintenance_recovery,
+    )
     return AgentComponents(
         settings=settings,
         clock=clock,
@@ -372,10 +613,12 @@ async def _assemble(settings: AgentSettings) -> AgentComponents:
         capacity_adapter=capacity,
         state_machine=state_machine,
         recovery_coordinator=recovery_coordinator,
-        workers=[realtime, scheduled, feedback],
+        workers=[realtime, scheduled, feedback, maintenance],
         database=database,
         shedding_client=shedding,
         db_ready=db_ready,
+        runtime=runtime,
+        provider_configuration=collector.provider_configuration,
     )
 
 
@@ -399,6 +642,7 @@ def _install_state(app: FastAPI, components: AgentComponents) -> None:
     app.state.capacity_adapter = components.capacity_adapter
     app.state.state_machine = components.state_machine
     app.state.recovery_coordinator = components.recovery_coordinator
+    app.state.provider_configuration = components.provider_configuration or {}
     app.state.workers = components.workers
     app.state.scheduled_worker = next(
         (worker for worker in components.workers if isinstance(worker, ScheduledWorker)),
@@ -430,4 +674,4 @@ def _demo_app_ready(state: Any) -> bool:
 app = create_app()
 
 
-__all__ = ["AgentComponents", "app", "create_app"]
+__all__ = ["AgentComponents", "app", "build_signal_providers", "create_app"]

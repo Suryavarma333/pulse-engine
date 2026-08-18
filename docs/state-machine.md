@@ -97,4 +97,8 @@ reductions. Renewed high load immediately returns to `PROTECT`.
 
 Unknown actions—such as a provider response followed by a database-write failure—block scale-in.
 The reconciliation worker uses a read-only capacity observation to mark the action reconciled or
-retain it unknown. Sensitive provider text is sanitized before audit/status output.
+retain it unknown. The maintenance worker leaves `FAILURE_SAFE` only after PostgreSQL, capacity
+provider state, and the authoritative demo control health all succeed; it then resumes WATCH,
+PROTECT, or RECOVERY from observed state. Retryable dispatch/tier failures retain their original
+correlation in a bounded durable retry queue. Sensitive provider text is sanitized before
+audit/status output.

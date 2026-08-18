@@ -140,11 +140,9 @@ async def operational_status(request: Request, environment: str | None = None) -
     workers = [_worker(item) for item in request.app.state.workers]
     scheduled = getattr(request.app.state, "scheduled_worker", None)
     next_due = None if scheduled is None else scheduled.next_due_at
-    provider_health = (
-        {}
-        if snapshot is None
-        else snapshot.signal_details.get("provider_health", {})
-    )
+    provider_health = dict(getattr(request.app.state, "provider_configuration", {}))
+    if snapshot is not None:
+        provider_health.update(snapshot.signal_details.get("provider_health", {}))
     return {
         "environment": selected_environment,
         "execution_mode": settings.execution_mode.value,

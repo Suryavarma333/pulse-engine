@@ -55,6 +55,17 @@ class ActionStatus(StrEnum):
     RECONCILED = "reconciled"
 
 
+class ResponseRetryKind(StrEnum):
+    DISPATCH = "dispatch"
+    SHEDDING = "shedding"
+
+
+class ResponseRetryStatus(StrEnum):
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class ProviderStatus(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"

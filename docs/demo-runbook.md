@@ -133,7 +133,9 @@ Stop while retaining PostgreSQL data:
 docker compose down
 ```
 
-Delete the named local data volume only after confirming its demo data is disposable:
+PostgreSQL uses Compose's project-scoped `<project>_pulse-postgres-data` identity. Use a distinct
+`--project-name` for every parallel checkout. Delete only the current project's volume after
+confirming its demo data is disposable:
 
 ```bash
 docker compose down --volumes

@@ -75,6 +75,23 @@ def test_checkout_structurally_bypasses_every_tier_and_noncritical_limiter() -> 
             assert response.json()["active_shedding_level"] == level
 
 
+def test_checkout_ignores_additive_client_metadata_for_base_compatibility() -> None:
+    with TestClient(create_app(settings(), store=InMemoryLoadSheddingStore())) as client:
+        response = client.post(
+            "/checkout",
+            json={
+                "cart_id": "compatible",
+                "item_count": 1,
+                "trace_context": {"source": "existing-client"},
+                "promotion_code": "ignored-by-demo",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.headers["X-Pulse-Endpoint-Mode"] == "normal"
+
+
 def test_protected_request_metrics_never_touch_the_control_store() -> None:
     store = CountingStore()
     with TestClient(create_app(settings(), store=store)) as client:

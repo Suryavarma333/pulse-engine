@@ -39,7 +39,9 @@ Runtime boundaries are `agent/`, `demo_app/`, `common/`, `db/`, `load_tests/`, `
 - Every capacity request is clamped twice to `min(global ceiling, event ceiling)` before boto3.
 - One response pipeline and one Auto Scaling adapter handle scheduled and real-time commands.
 - The scaling action is claimed durably before external work. Stable idempotency keys make
-  repeated worker polls no-ops and uncertain actions block scale-in until reconciliation.
+  repeated worker polls no-ops; a bounded maintenance worker reconciles uncertain actions,
+  retries safe tier/dispatch work with the same correlation, and verifies dependencies before
+  leaving failure-safe state.
 - Scale-down requires sustained low load, reduces capacity and tier stepwise, and honors cooldown.
 - The demo app persists a tier transition before activation. Checkout bypasses every
   non-critical limiter/cache/disable policy.
@@ -130,7 +132,8 @@ See the exact lifecycle, reset, and failure commands in the [demo runbook](docs/
 | capacity | `PULSE_MAX_INSTANCE_CEILING`, `PULSE_MINIMUM_DESIRED_CAPACITY` | validated startup bounds and double clamp |
 | detection | baseline/acceleration/ratio/confidence/confirmation settings | asymmetric entry/exit hysteresis |
 | recovery | low threshold, confirmation count, cooldown, decrement | gradual, non-flapping scale-down |
-| signals | poll, freshness, timeout, buffer, simulated TTL settings | bounded memory and graceful optional-provider loss |
+| signals | poll, freshness, timeout, buffer, simulated TTL and opt-in AWS/session sources | bounded memory, explicit omitted/stale health, and graceful optional-provider loss |
+| maintenance | reconciliation age/batch, retry/backoff, snapshot retention/batch | bounded recovery work and seven-day raw-snapshot retention by default |
 | APIs | query window/row limits, dashboard origins | bounded read-only browser access |
 | protection | `PULSE_CONTROL_TOKEN`, non-critical rate/burst | token is server-side; checkout never uses limiter |
 
@@ -218,7 +221,9 @@ docker compose logs --tail=200 postgres migrate demo-app agent dashboard
 docker compose down
 ```
 
-Delete the named local demo volume only when its data is no longer needed:
+Compose keeps PostgreSQL data in the project-scoped `<project>_pulse-postgres-data` volume, so
+parallel checkouts must use distinct `--project-name` values and never share a global database
+volume. Delete only the current project's volume when its data is no longer needed:
 
 ```bash
 docker compose down --volumes

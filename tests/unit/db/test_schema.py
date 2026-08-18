@@ -14,6 +14,7 @@ EXPECTED_TABLES = {
     "surge_prediction_points",
     "scaling_actions",
     "load_shedding_events",
+    "response_retries",
 }
 
 
@@ -79,6 +80,7 @@ def test_query_indexes_cover_time_and_run_filters() -> None:
     assert "ix_scaling_actions_demo_run_requested_at" in indexes["scaling_actions"]
     assert "ix_load_shedding_events_demo_run_started_at" in indexes["load_shedding_events"]
     assert "ix_demo_runs_environment_started_at" in indexes["demo_runs"]
+    assert "ix_response_retries_due" in indexes["response_retries"]
 
 
 def test_result_and_capacity_checks_are_registered() -> None:

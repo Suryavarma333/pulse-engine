@@ -100,6 +100,7 @@ class CompositeSignalCollector:
         snapshot_writer: SnapshotWriter,
         *,
         origin_provider_name: str = "demo_app",
+        omitted_providers: tuple[str, ...] = (),
     ) -> None:
         if not providers:
             raise ValueError("at least one provider is required")
@@ -110,8 +111,34 @@ class CompositeSignalCollector:
         self._providers = tuple(providers)
         self._writer = snapshot_writer
         self._origin_name = origin_provider_name
+        configured_names = {provider.name for provider in providers}
+        if configured_names.intersection(omitted_providers):
+            raise ValueError("configured providers cannot also be marked omitted")
+        self._omitted_providers = tuple(sorted(set(omitted_providers)))
         if origin_provider_name not in {provider.name for provider in providers}:
             raise ValueError("origin provider is required")
+
+    @property
+    def provider_configuration(self) -> dict[str, dict[str, Any]]:
+        configured = {
+            provider.name: {
+                "status": ProviderStatus.DEGRADED.value,
+                "included": False,
+                "details": {"reason": "awaiting_first_read"},
+            }
+            for provider in self._providers
+        }
+        configured.update(
+            {
+                name: {
+                    "status": ProviderStatus.UNAVAILABLE.value,
+                    "included": False,
+                    "details": {"reason": "not_configured"},
+                }
+                for name in self._omitted_providers
+            }
+        )
+        return configured
 
     async def collect(
         self, *, now: datetime, demo_run_id: UUID | None = None
@@ -127,6 +154,16 @@ class CompositeSignalCollector:
             )
             for provider in self._providers
         }
+        health.update(
+            {
+                name: {
+                    "status": ProviderStatus.UNAVAILABLE.value,
+                    "included": False,
+                    "details": {"reason": "not_configured"},
+                }
+                for name in self._omitted_providers
+            }
+        )
         origin = readings[self._origin_name]
         if not self._is_fresh(origin) or "origin_request_rate_rps" not in origin.values:
             raise RequiredSignalUnavailable(health)

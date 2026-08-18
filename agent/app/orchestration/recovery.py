@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -73,6 +74,8 @@ class RecoveryCoordinator:
             return self._hold(observation, "recovery_failure_safe_hold")
         if observation.high_load:
             self._low_confirmations = 0
+            if self._states.state is ControlState.PROTECT:
+                return self._hold(observation, "recovery_high_load_hold")
             self._cooldown_until = None
             self._states.transition(ControlEvent.CONFIRMED_HIGH)
             requested_level = command_template.requested_shedding_level
@@ -195,8 +198,21 @@ class RecoveryWorker:
     ) -> None:
         self._coordinator = coordinator
         self._pipeline = response_pipeline
+        self._lock = asyncio.Lock()
 
     async def run_once(
+        self,
+        observation: RecoveryObservation,
+        *,
+        command_template: ResponseCommand,
+    ) -> RecoveryCycleResult:
+        async with self._lock:
+            return await self._run_once(
+                observation,
+                command_template=command_template,
+            )
+
+    async def _run_once(
         self,
         observation: RecoveryObservation,
         *,
