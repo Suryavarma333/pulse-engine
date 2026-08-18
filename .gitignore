@@ -10,3 +10,5 @@ htmlcov/
 dist/
 build/
 .DS_Store
+.cursor/sdlc-system/state/
+.cursor/sdlc-system/workflow-artifacts/

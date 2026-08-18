@@ -28,11 +28,19 @@ class ScalingAction(Base):
             "applied_desired_capacity IS NULL OR applied_desired_capacity <= max_instance_ceiling",
             name="applied_within_ceiling",
         ),
+        CheckConstraint(
+            "applied_desired_capacity IS NULL OR applied_desired_capacity >= 0",
+            name="nonnegative_applied_capacity",
+        ),
         Index("ix_scaling_actions_correlation_id", "correlation_id"),
+        Index("ix_scaling_actions_demo_run_requested_at", "demo_run_id", "requested_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     correlation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    demo_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("demo_runs.id", ondelete="SET NULL")
+    )
     prediction_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("surge_predictions.id", ondelete="SET NULL"), index=True
     )
@@ -61,3 +69,4 @@ class ScalingAction(Base):
     signal_evidence: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     provider_request_id: Mapped[str | None] = mapped_column(String(160))
     error_message: Mapped[str | None] = mapped_column(Text)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

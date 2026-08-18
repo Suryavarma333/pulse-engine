@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -26,10 +27,17 @@ class SurgePrediction(Base):
         CheckConstraint("confidence >= 0 AND confidence <= 1", name="confidence_range"),
         CheckConstraint("baseline_rps >= 0 AND predicted_peak_rps >= 0", name="nonnegative_rates"),
         CheckConstraint("recommended_capacity >= 0", name="nonnegative_recommended_capacity"),
+        Index("ix_surge_predictions_demo_run_created_at", "demo_run_id", "created_at"),
+        Index("ix_surge_predictions_environment_created_at", "environment", "created_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    demo_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("demo_runs.id", ondelete="SET NULL")
+    )
+    environment: Mapped[str] = mapped_column(String(32), nullable=False, default="local")
+    correlation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, default=uuid4, index=True)
     scheduled_event_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("scheduled_events.id", ondelete="SET NULL"), index=True
     )
@@ -55,6 +63,10 @@ class SurgePrediction(Base):
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     signal_evidence: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    reactive_comparator_crossed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    formula_version: Mapped[str] = mapped_column(String(20), nullable=False, default="v1")
     actual_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     actual_peak_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     actual_peak_rps: Mapped[float | None] = mapped_column(Float)

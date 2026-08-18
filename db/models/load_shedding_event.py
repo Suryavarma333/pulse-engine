@@ -27,6 +27,7 @@ class LoadSheddingEvent(Base):
         CheckConstraint("to_level >= 0 AND to_level <= 3", name="to_level_range"),
         CheckConstraint("ended_at IS NULL OR ended_at >= started_at", name="valid_interval"),
         Index("ix_load_shedding_events_environment_started_at", "environment", "started_at"),
+        Index("ix_load_shedding_events_demo_run_started_at", "demo_run_id", "started_at"),
         Index(
             "uq_load_shedding_events_active_environment",
             "environment",
@@ -37,6 +38,9 @@ class LoadSheddingEvent(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     correlation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    demo_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("demo_runs.id", ondelete="SET NULL")
+    )
     prediction_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("surge_predictions.id", ondelete="SET NULL")
     )
