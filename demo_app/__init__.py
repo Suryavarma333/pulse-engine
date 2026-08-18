@@ -1,0 +1,1 @@
+"""Pulse protected demo application."""

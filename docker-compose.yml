@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pulse}
+      POSTGRES_USER: ${POSTGRES_USER:-pulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulse-local-only}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    ports:
+      - "5432:5432"
+    volumes:
+      - pulse-postgres-data:/var/lib/postgresql/data
+
+  migrate:
+    build:
+      context: .
+      dockerfile: demo_app/Dockerfile
+    command: ["alembic", "-c", "db/alembic.ini", "upgrade", "head"]
+    environment:
+      PULSE_DATABASE_URL: ${PULSE_DATABASE_URL:-postgresql+psycopg://pulse:pulse-local-only@postgres:5432/pulse}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  demo-app:
+    build:
+      context: .
+      dockerfile: demo_app/Dockerfile
+    environment:
+      PULSE_ENVIRONMENT: ${PULSE_ENVIRONMENT:-local}
+      PULSE_DATABASE_URL: ${PULSE_DATABASE_URL:-postgresql+psycopg://pulse:pulse-local-only@postgres:5432/pulse}
+      PULSE_CONTROL_TOKEN: ${PULSE_CONTROL_TOKEN:-local-demo-token}
+      PULSE_METRICS_WINDOW_SECONDS: ${PULSE_METRICS_WINDOW_SECONDS:-10}
+      PULSE_NONCRITICAL_RATE_PER_SECOND: ${PULSE_NONCRITICAL_RATE_PER_SECOND:-2}
+      PULSE_NONCRITICAL_RATE_BURST: ${PULSE_NONCRITICAL_RATE_BURST:-4}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+volumes:
+  pulse-postgres-data:
