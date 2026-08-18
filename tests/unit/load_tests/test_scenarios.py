@@ -42,6 +42,7 @@ def test_sudden_spike_leading_signal_precedes_reactive_comparator() -> None:
     )
 
     assert first_leading < comparator
+    assert comparator - first_leading >= 10
     assert plan.stages[1].label == "unannounced-spike"
     assert plan.stage_at(plan.stages[1].starts_at_seconds).users == 14
 

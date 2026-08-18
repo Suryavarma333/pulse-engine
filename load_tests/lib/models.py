@@ -133,17 +133,18 @@ def build_scenario_plan(
         stages = (
             LoadStage(0, 2, 2, "quiet-baseline"),
             LoadStage(5, 14, 12, "unannounced-spike"),
-            LoadStage(12, 5, 8, "recovery"),
-            LoadStage(16, 0, 4, "complete"),
+            LoadStage(16, 5, 8, "recovery"),
+            LoadStage(20, 0, 4, "complete"),
         )
-        duration = 16
+        duration = 20
         pulse = (
             SignalFrame(2, edge_request_rate_rps=5, queue_depth=2, cpu_utilization_pct=20),
             SignalFrame(4, edge_request_rate_rps=24, queue_depth=18, login_rate_rps=12),
             SignalFrame(7, edge_request_rate_rps=46, queue_depth=55, cpu_utilization_pct=48),
             SignalFrame(10, edge_request_rate_rps=60, queue_depth=80),
-            SignalFrame(12, edge_request_rate_rps=60, queue_depth=80, cpu_utilization_pct=78),
-            SignalFrame(14, edge_request_rate_rps=7, queue_depth=3, cpu_utilization_pct=26),
+            SignalFrame(13, edge_request_rate_rps=72, queue_depth=95),
+            SignalFrame(17, edge_request_rate_rps=72, queue_depth=95, cpu_utilization_pct=78),
+            SignalFrame(19, edge_request_rate_rps=7, queue_depth=3, cpu_utilization_pct=26),
         )
     else:
         stages = (
