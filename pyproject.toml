@@ -26,12 +26,15 @@ dev = [
   "pytest-cov>=5,<7",
   "ruff>=0.8,<1",
 ]
+load = [
+  "locust>=2.32,<3",
+]
 
 [tool.setuptools.packages.find]
-include = ["agent*", "common*", "db*", "demo_app*"]
+include = ["agent*", "common*", "db*", "demo_app*", "load_tests*"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -p no:locust"
 pythonpath = ["."]
 testpaths = ["tests"]
 
